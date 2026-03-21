@@ -12,7 +12,6 @@ struct TRM_Renderer_FrameInFlight
 	VkCommandBuffer commandBuffer;
 	VkFence commandBufferExecutedFence;
 	VkSemaphore imageAvailableSemaphore;
-	VkSemaphore imageRenderedSemaphore;
 	uint32_t imageIndex;
 };
 
@@ -20,6 +19,7 @@ struct TRM_Renderer_SwapchainImage
 {
 	VkImage image;
 	VkImageView imageView;
+	VkSemaphore imageRenderedSemaphore;
 	VkBool32 transitionned;
 };
 
@@ -191,6 +191,7 @@ static void TRM_Renderer_createDevice(
 
 static void TRM_Renderer_createSwapchain(
 	const VkAllocationCallbacks* pAllocator,
+	VkPhysicalDevice physicalDevice,
 	VkDevice device,
 	VkSurfaceKHR surface,
 	VkFormat format,
@@ -199,14 +200,26 @@ static void TRM_Renderer_createSwapchain(
 	uint32_t queueFamilyIndex,
 	VkSwapchainKHR* pSwapchain)
 {
+	VkSurfaceCapabilitiesKHR surfaceCapabilities = {0};
+	if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+
+	uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
+	if(surfaceCapabilities.maxImageCount > 0 && imageCount > surfaceCapabilities.maxImageCount)
+	{
+		imageCount = surfaceCapabilities.maxImageCount;
+	}
+
 	VkSwapchainCreateInfoKHR swapchainCreateInfo = {0};
 	swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
 	swapchainCreateInfo.pNext = NULL;
 	swapchainCreateInfo.flags = 0;
 	swapchainCreateInfo.surface = surface;
-	swapchainCreateInfo.minImageCount = 2;
-	swapchainCreateInfo.imageFormat = format;
-	swapchainCreateInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+	swapchainCreateInfo.minImageCount = imageCount;
+	swapchainCreateInfo.imageFormat = format; // we should query this
+	swapchainCreateInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR; // we should query this
 	swapchainCreateInfo.imageExtent.width = windowWidth;
 	swapchainCreateInfo.imageExtent.height = windowHeight;
 	swapchainCreateInfo.imageArrayLayers = 1;
@@ -337,9 +350,10 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	vkGetDeviceQueue(pState->device, pState->queueFamilyIndex, 0, &pState->queue);
 	TRM_Renderer_createCommandPool(pState->pAllocator, pState->device, pState->queueFamilyIndex, &pState->commandPool);
 
-	VkFormat swapchainFormat = VK_FORMAT_R8G8B8A8_UNORM;
+	VkFormat swapchainFormat = VK_FORMAT_B8G8R8A8_SRGB; // we should query this
 	TRM_Renderer_createSwapchain(
 		pState->pAllocator,
+		pState->physicalDevice,
 		pState->device,
 		pState->surface,
 		swapchainFormat,
@@ -366,6 +380,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 			swapchainFormat,
 			&pState->pSwapchainImages[swapchainImageIndex].imageView);
 
+		TRM_Renderer_createSemaphore(pState->pAllocator, pState->device, &pState->pSwapchainImages[swapchainImageIndex].imageRenderedSemaphore);
 		pState->pSwapchainImages[swapchainImageIndex].transitionned = VK_FALSE;
 	}
 
@@ -379,7 +394,6 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		TRM_Renderer_allocateCommandBuffer(pState->commandPool, pState->device, &pState->pFramesInFlight[frameInFlightIndex].commandBuffer);
 		TRM_Renderer_createFence(pState->pAllocator, pState->device, &pState->pFramesInFlight[frameInFlightIndex].commandBufferExecutedFence);
 		TRM_Renderer_createSemaphore(pState->pAllocator, pState->device, &pState->pFramesInFlight[frameInFlightIndex].imageAvailableSemaphore);
-		TRM_Renderer_createSemaphore(pState->pAllocator, pState->device, &pState->pFramesInFlight[frameInFlightIndex].imageRenderedSemaphore);
 		pState->pFramesInFlight[frameInFlightIndex].imageIndex = UINT32_MAX;
 	}
 
@@ -397,7 +411,6 @@ void TRM_Renderer_terminate(void)
 
 		for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
 		{
-			vkDestroySemaphore(pState->device, pState->pFramesInFlight[frameInFlightIndex].imageRenderedSemaphore, pState->pAllocator);
 			vkDestroySemaphore(pState->device, pState->pFramesInFlight[frameInFlightIndex].imageAvailableSemaphore, pState->pAllocator);
 			vkDestroyFence(pState->device, pState->pFramesInFlight[frameInFlightIndex].commandBufferExecutedFence, pState->pAllocator);
 		}
@@ -406,6 +419,7 @@ void TRM_Renderer_terminate(void)
 
 		for(uint32_t swapchainImageIndex = 0; swapchainImageIndex < pState->swapchainImageCount; ++swapchainImageIndex)
 		{
+			vkDestroySemaphore(pState->device, pState->pSwapchainImages[swapchainImageIndex].imageRenderedSemaphore, pState->pAllocator);
 			vkDestroyImageView(pState->device, pState->pSwapchainImages[swapchainImageIndex].imageView, pState->pAllocator);
 		}
 
@@ -533,7 +547,7 @@ void TRM_Renderer_render(void)
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &pState->pFramesInFlight[pState->frameIndex].commandBuffer;
 	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = &pState->pFramesInFlight[pState->frameIndex].imageRenderedSemaphore;
+	submitInfo.pSignalSemaphores = &pState->pSwapchainImages[imageIndex].imageRenderedSemaphore;
 
 	if(vkQueueSubmit(pState->queue, 1, &submitInfo, pState->pFramesInFlight[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
 	{
@@ -544,7 +558,7 @@ void TRM_Renderer_render(void)
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	presentInfo.pNext = NULL;
 	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = &pState->pFramesInFlight[pState->frameIndex].imageRenderedSemaphore;
+	presentInfo.pWaitSemaphores = &pState->pSwapchainImages[imageIndex].imageRenderedSemaphore;
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = &pState->swapchain;
 	presentInfo.pImageIndices = &imageIndex;
