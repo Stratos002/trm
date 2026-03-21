@@ -11,7 +11,7 @@ struct TRM_Memory_State
 
 static struct TRM_Memory_State* pState = NULL;
 
-void TRM_Memory_start()
+void TRM_Memory_start(void)
 {
 	if(pState != NULL)
 	{
@@ -27,7 +27,7 @@ void TRM_Memory_start()
 	memset(pState, 0, sizeof(struct TRM_Memory_State));
 }
 
-void TRM_Memory_terminate()
+void TRM_Memory_terminate(void)
 {
 	if(pState != NULL)
 	{

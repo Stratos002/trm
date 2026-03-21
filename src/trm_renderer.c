@@ -386,7 +386,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	pState->frameIndex = 0;
 }
 
-void TRM_Renderer_terminate()
+void TRM_Renderer_terminate(void)
 {
 	if(pState != NULL)
 	{
@@ -422,7 +422,7 @@ void TRM_Renderer_terminate()
 	}
 }
 
-void TRM_Renderer_render()
+void TRM_Renderer_render(void)
 {
 	if(vkWaitForFences(pState->device, 1, &pState->pFramesInFlight[pState->frameIndex].commandBufferExecutedFence, VK_FALSE, UINT64_MAX) != VK_SUCCESS)
 	{

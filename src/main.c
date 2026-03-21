@@ -9,7 +9,7 @@
 #define TRM_WINDOW_WIDTH 1000
 #define TRM_WINDOW_HEIGHT 1000
 
-int main()
+int main(void)
 {
 	if(!glfwInit())
 	{

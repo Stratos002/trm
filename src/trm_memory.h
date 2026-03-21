@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-void TRM_Memory_start();
+void TRM_Memory_start(void);
 
-void TRM_Memory_terminate();
+void TRM_Memory_terminate(void);
 
 void TRM_Memory_allocate(size_t size, void** ppMemory);
 

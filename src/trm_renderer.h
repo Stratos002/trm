@@ -9,8 +9,8 @@
 
 void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t windowHeight);
 
-void TRM_Renderer_terminate();
+void TRM_Renderer_terminate(void);
 
-void TRM_Renderer_render();
+void TRM_Renderer_render(void);
 
 #endif
