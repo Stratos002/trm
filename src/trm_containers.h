@@ -2,6 +2,7 @@
 #define TRM_CONTAINERS
 
 #include <stdint.h>
+#include <stddef.h>
 
 struct TRM_DynamicArray
 {

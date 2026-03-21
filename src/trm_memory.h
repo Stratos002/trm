@@ -1,7 +1,7 @@
 #ifndef TRM_MEMORY
 #define TRM_MEMORY
 
-#include <stdint.h>
+#include <stddef.h>
 
 void TRM_Memory_start(void);
 

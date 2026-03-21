@@ -33,11 +33,11 @@ void TRM_Memory_terminate(void)
 	{
 		if(pState->allocationCount > 0)
 		{
-			printf("memory leak detected !");
+			printf("memory leak detected !\n");
 		}
 		else
 		{
-			printf("no memory leak detected ;)");
+			printf("no memory leak detected ;)\n");
 		}
 
 		free(pState);

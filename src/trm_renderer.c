@@ -131,7 +131,7 @@ static void TRM_Renderer_findQueueFamilyIndex(VkPhysicalDevice physicalDevice, V
 	VkQueueFamilyProperties* pQueueFamilyProperties = NULL;
 
 	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyPropertyCount, NULL);
-	TRM_Memory_allocate(sizeof(VkQueueFamilyProperties) * queueFamilyPropertyCount, &pQueueFamilyProperties);
+	TRM_Memory_allocate(sizeof(VkQueueFamilyProperties) * queueFamilyPropertyCount, (void**)&pQueueFamilyProperties);
 	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyPropertyCount, pQueueFamilyProperties);
 
 	for(uint32_t queueFamilyIndex = 0; queueFamilyIndex < queueFamilyPropertyCount; ++queueFamilyIndex)
@@ -216,7 +216,7 @@ static void TRM_Renderer_createSwapchain(
 	swapchainCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
 	swapchainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-	swapchainCreateInfo.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+	swapchainCreateInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
 	swapchainCreateInfo.clipped = VK_TRUE;
 	swapchainCreateInfo.oldSwapchain = VK_NULL_HANDLE;
 
@@ -318,7 +318,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		exit(EXIT_FAILURE);
 	}
 
-	TRM_Memory_allocate(sizeof(struct TRM_Renderer_State), &pState);
+	TRM_Memory_allocate(sizeof(struct TRM_Renderer_State), (void**)&pState);
 	TRM_Memory_memzero(sizeof(struct TRM_Renderer_State), pState);
 
 	if(volkInitialize() != VK_SUCCESS)
@@ -372,7 +372,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	TRM_Memory_deallocate(pSwapchainImages);
 
 	
-	TRM_Memory_allocate(sizeof(struct TRM_Renderer_FrameInFlight) * pState->swapchainImageCount, &pState->pFramesInFlight);
+	TRM_Memory_allocate(sizeof(struct TRM_Renderer_FrameInFlight) * pState->swapchainImageCount, (void**)&pState->pFramesInFlight);
 
 	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
 	{
