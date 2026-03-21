@@ -13,13 +13,13 @@ static struct TRM_Memory_State* pState = NULL;
 
 void TRM_Memory_start()
 {
-	if (pState != NULL)
+	if(pState != NULL)
 	{
 		exit(EXIT_FAILURE);
 	}
 
 	pState = (struct TRM_Memory_State*)malloc(sizeof(struct TRM_Memory_State));
-	if (pState == NULL)
+	if(pState == NULL)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -29,9 +29,9 @@ void TRM_Memory_start()
 
 void TRM_Memory_terminate()
 {
-	if (pState != NULL)
+	if(pState != NULL)
 	{
-		if (pState->allocationCount > 0)
+		if(pState->allocationCount > 0)
 		{
 			printf("memory leak detected !");
 		}
@@ -48,7 +48,7 @@ void TRM_Memory_terminate()
 void TRM_Memory_allocate(size_t size, void** ppMemory)
 {
 	void* pMemory = malloc(size);
-	if (pMemory == NULL)
+	if(pMemory == NULL)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -65,7 +65,7 @@ void TRM_Memory_deallocate(void* pMemory)
 
 void TRM_Memory_memzero(size_t size, void* pMemory)
 {
-	if (pMemory == NULL)
+	if(pMemory == NULL)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -81,7 +81,7 @@ void TRM_Memory_memcpy(size_t size, const void* pSrc, void* pDst)
 void TRM_Memory_realloc(size_t size, void** ppDst)
 {
 	void* pNewMemory = realloc(*ppDst, size);
-	if (pNewMemory == NULL)
+	if(pNewMemory == NULL)
 	{
 		exit(EXIT_FAILURE);
 	}

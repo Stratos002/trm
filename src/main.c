@@ -11,14 +11,14 @@
 
 int main()
 {
-	if (!glfwInit())
+	if(!glfwInit())
 	{
 		return 1;
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	GLFWwindow* pWindow = glfwCreateWindow(TRM_WINDOW_WIDTH, TRM_WINDOW_HEIGHT, "torment", NULL, NULL);
-	if (pWindow == NULL)
+	if(pWindow == NULL)
 	{
 		return 1;
 	}
@@ -26,7 +26,7 @@ int main()
 	TRM_Memory_start();
 	TRM_Renderer_start(pWindow, TRM_WINDOW_WIDTH, TRM_WINDOW_HEIGHT);
 
-	while (!glfwWindowShouldClose(pWindow))
+	while(!glfwWindowShouldClose(pWindow))
 	{
 		glfwPollEvents();
 		TRM_Renderer_render();

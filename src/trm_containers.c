@@ -12,7 +12,7 @@ static void TRM_DynamicArray_grow(struct TRM_DynamicArray* pDynamicArray)
 void TRM_DynamicArray_create(size_t elementSize, struct TRM_DynamicArray* pDynamicArray)
 {
 	TRM_Memory_allocate(elementSize * 2, &pDynamicArray->pData);
-	
+
 	pDynamicArray->elementSize = elementSize;
 	pDynamicArray->elementCount = 0;
 	pDynamicArray->elementCapacity = 2;
@@ -25,7 +25,7 @@ void TRM_DynamicArray_destroy(struct TRM_DynamicArray* pDynamicArray)
 
 void TRM_DynamicArray_push(const void* pElement, struct TRM_DynamicArray* pDynamicArray)
 {
-	if (pDynamicArray->elementCount == pDynamicArray->elementCapacity)
+	if(pDynamicArray->elementCount == pDynamicArray->elementCapacity)
 	{
 		TRM_DynamicArray_grow(pDynamicArray);
 	}
@@ -36,7 +36,7 @@ void TRM_DynamicArray_push(const void* pElement, struct TRM_DynamicArray* pDynam
 
 void TRM_DynamicArray_at(uint32_t index, const struct TRM_DynamicArray* pDynamicArray, void* pElement)
 {
-	if (index >= pDynamicArray->elementCount)
+	if(index >= pDynamicArray->elementCount)
 	{
 		exit(EXIT_FAILURE);
 	}
