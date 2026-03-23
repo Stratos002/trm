@@ -17,7 +17,7 @@ int main(void)
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	GLFWwindow* pWindow = glfwCreateWindow(TRM_WINDOW_WIDTH, TRM_WINDOW_HEIGHT, "torment", NULL, NULL);
+	GLFWwindow* pWindow = glfwCreateWindow(TRM_WINDOW_WIDTH, TRM_WINDOW_HEIGHT, "TRM", NULL, NULL);
 	if(pWindow == NULL)
 	{
 		return 1;

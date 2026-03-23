@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-set(PROJECT_NAME torment)
+set(PROJECT_NAME trm)
 project(${PROJECT_NAME})
 
 # C99
@@ -13,7 +13,7 @@ file(GLOB_RECURSE SOURCES src/*.c src/*.h)
 
 add_executable(
 	${PROJECT_NAME} 
-	${SOURCES} "src/trm_containers.h" "src/trm_containers.c")
+	${SOURCES})
 
 target_include_directories(
 	${PROJECT_NAME} 

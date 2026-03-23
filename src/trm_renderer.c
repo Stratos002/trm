@@ -13,6 +13,7 @@ struct TRM_Renderer_FrameInFlight
 	VkFence commandBufferExecutedFence;
 	VkSemaphore imageAvailableSemaphore;
 	uint32_t imageIndex;
+	VkDescriptorSet descriptorSet;
 };
 
 struct TRM_Renderer_SwapchainImage
@@ -33,11 +34,16 @@ struct TRM_Renderer_State
 	VkDevice device;
 	VkQueue queue;
 	VkCommandPool commandPool;
+	VkDescriptorPool descriptorPool;
 	VkSwapchainKHR swapchain;
 	uint32_t swapchainImageCount;
 	struct TRM_Renderer_SwapchainImage* pSwapchainImages;
 	struct TRM_Renderer_FrameInFlight* pFramesInFlight;
 	uint32_t frameIndex;
+
+	VkDescriptorSetLayout descriptorSetLayout;
+	VkPipelineLayout computePipelineLayout;
+	VkPipeline computePipeline;
 };
 
 static struct TRM_Renderer_State* pState = NULL;
@@ -47,9 +53,9 @@ static void TRM_Renderer_createInstance(const VkAllocationCallbacks* pAllocator,
 	VkApplicationInfo applicationInfo = {0};
 	applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
 	applicationInfo.pNext = NULL;
-	applicationInfo.pApplicationName = "torment";
+	applicationInfo.pApplicationName = "TRM";
 	applicationInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-	applicationInfo.pEngineName = "torment_engine";
+	applicationInfo.pEngineName = "TRM";
 	applicationInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
 	applicationInfo.apiVersion = VK_MAKE_API_VERSION(1, 0, 0, 0);
 
@@ -223,7 +229,7 @@ static void TRM_Renderer_createSwapchain(
 	swapchainCreateInfo.imageExtent.width = windowWidth;
 	swapchainCreateInfo.imageExtent.height = windowHeight;
 	swapchainCreateInfo.imageArrayLayers = 1;
-	swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
 	swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swapchainCreateInfo.queueFamilyIndexCount = 1;
 	swapchainCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
@@ -269,7 +275,11 @@ static void TRM_Renderer_createImageView(
 	}
 }
 
-static void TRM_Renderer_createCommandPool(const VkAllocationCallbacks* pAllocator, VkDevice device, uint32_t queueFamilyIndex, VkCommandPool* pCommandPool)
+static void TRM_Renderer_createCommandPool(
+	const VkAllocationCallbacks* pAllocator, 
+	VkDevice device, 
+	uint32_t queueFamilyIndex, 
+	VkCommandPool* pCommandPool)
 {
 	VkCommandPoolCreateInfo commandPoolCreateInfo = {0};
 	commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -324,6 +334,173 @@ static void TRM_Renderer_allocateCommandBuffer(VkCommandPool commandPool, VkDevi
 	}
 }
 
+static void TRM_Renderer_createDescriptorPool(const VkAllocationCallbacks* pAllocator, VkDevice device, VkDescriptorPool* pDescriptorPool)
+{
+	VkDescriptorPoolSize uniformBufferDescriptorPoolSize = {0};
+	uniformBufferDescriptorPoolSize.descriptorCount = 10;
+	uniformBufferDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+
+	VkDescriptorPoolSize storageBufferDescriptorPoolSize = {0};
+	storageBufferDescriptorPoolSize.descriptorCount = 10;
+	storageBufferDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+
+	VkDescriptorPoolSize storageImageDescriptorPoolSize = {0};
+	storageImageDescriptorPoolSize.descriptorCount = 10;
+	storageImageDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+
+	VkDescriptorPoolSize descriptorPoolSizes[] = {
+		uniformBufferDescriptorPoolSize,
+		storageBufferDescriptorPoolSize,
+		storageImageDescriptorPoolSize
+	};
+
+	VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {0};
+	descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	descriptorPoolCreateInfo.pNext = NULL;
+	descriptorPoolCreateInfo.flags = 0;
+	descriptorPoolCreateInfo.maxSets = 10;
+	descriptorPoolCreateInfo.poolSizeCount = sizeof(descriptorPoolSizes) / sizeof(descriptorPoolSizes[0]);
+	descriptorPoolCreateInfo.pPoolSizes = descriptorPoolSizes;
+
+	if(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, pAllocator, pDescriptorPool) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_allocateDescriptorSet(
+	VkDevice device, 
+	VkDescriptorPool descriptorPool, 
+	VkDescriptorSetLayout descriptorSetLayout, 
+	VkDescriptorSet* pDescriptorSet)
+{
+	VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {0};
+	descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	descriptorSetAllocateInfo.pNext = NULL;
+	descriptorSetAllocateInfo.descriptorPool = descriptorPool;
+	descriptorSetAllocateInfo.descriptorSetCount = 1;
+	descriptorSetAllocateInfo.pSetLayouts = &descriptorSetLayout;
+
+	if(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, pDescriptorSet) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createDescriptorSetLayout(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device,
+	uint32_t bindingCount,
+	const VkDescriptorSetLayoutBinding* pBindings,
+	VkDescriptorSetLayout* pDescriptorSetLayout)
+{
+	VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {0};
+	descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	descriptorSetLayoutCreateInfo.pNext = NULL;
+	descriptorSetLayoutCreateInfo.flags = 0;
+	descriptorSetLayoutCreateInfo.bindingCount = bindingCount;
+	descriptorSetLayoutCreateInfo.pBindings = pBindings;
+
+	if(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, pAllocator, pDescriptorSetLayout) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createPipelineLayout(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device,
+	uint32_t descriptorSetLayoutCount,
+	const VkDescriptorSetLayout* pDescriptorSetLayouts,
+	VkPipelineLayout* pPipelineLayout)
+{
+	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {0};
+	pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutCreateInfo.pNext = NULL;
+	pipelineLayoutCreateInfo.flags = 0;
+	pipelineLayoutCreateInfo.setLayoutCount = descriptorSetLayoutCount;
+	pipelineLayoutCreateInfo.pSetLayouts = pDescriptorSetLayouts;
+	pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+	pipelineLayoutCreateInfo.pPushConstantRanges = NULL;
+
+	if(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, pAllocator, pPipelineLayout) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createShaderModule(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device,
+	size_t codeSize, 
+	const uint32_t* pCode, 
+	VkShaderModule* pShaderModule)
+{
+	VkShaderModuleCreateInfo shaderModuleCreateInfo = {0};
+	shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	shaderModuleCreateInfo.pNext = NULL;
+	shaderModuleCreateInfo.flags = 0;
+	shaderModuleCreateInfo.codeSize = codeSize;
+	shaderModuleCreateInfo.pCode = pCode;
+
+	if(vkCreateShaderModule(device, &shaderModuleCreateInfo, pAllocator, pShaderModule) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createComputePipeline(
+	const VkAllocationCallbacks* pAllocator, 
+	VkDevice device, 
+	VkShaderModule shaderModule, 
+	VkPipelineLayout pipelineLayout, 
+	VkPipeline* pComputePipeline)
+{
+	VkPipelineShaderStageCreateInfo shaderStageCreateInfo = {0};
+	shaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shaderStageCreateInfo.pNext = NULL;
+	shaderStageCreateInfo.flags = 0;
+	shaderStageCreateInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	shaderStageCreateInfo.module = shaderModule;
+	shaderStageCreateInfo.pName = "main";
+	shaderStageCreateInfo.pSpecializationInfo = NULL;
+
+	VkComputePipelineCreateInfo computPipelineCreateInfo = {0};
+	computPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	computPipelineCreateInfo.pNext = VK_NULL_HANDLE;
+	computPipelineCreateInfo.flags = 0;
+	computPipelineCreateInfo.stage = shaderStageCreateInfo;
+	computPipelineCreateInfo.layout = pipelineLayout;
+	computPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+	computPipelineCreateInfo.basePipelineIndex = 0;
+
+	if(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computPipelineCreateInfo, pAllocator, pComputePipeline) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+// todo : move this
+static void TRM_Renderer_readShader(const char* pPath, uint32_t* pSize, uint32_t** ppCode)
+{
+	FILE* pFile = fopen(pPath, "rb");
+	if(pFile == NULL)
+	{
+		printf("could not open shader : %s\n", pPath);
+		exit(EXIT_FAILURE);
+	}
+
+	fseek(pFile, 0, SEEK_END);
+	*pSize = ftell(pFile);
+	rewind(pFile);
+
+	TRM_Memory_allocate(sizeof(uint32_t) * (*pSize), ppCode);
+
+	fread(*ppCode, 1, *pSize, pFile);
+
+	fclose(pFile);
+}
+
 void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t windowHeight)
 {
 	if(pState != NULL)
@@ -349,8 +526,9 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	TRM_Renderer_createDevice(pState->pAllocator, pState->physicalDevice, pState->queueFamilyIndex, &pState->device);
 	vkGetDeviceQueue(pState->device, pState->queueFamilyIndex, 0, &pState->queue);
 	TRM_Renderer_createCommandPool(pState->pAllocator, pState->device, pState->queueFamilyIndex, &pState->commandPool);
+	TRM_Renderer_createDescriptorPool(pState->pAllocator, pState->device, &pState->descriptorPool);
 
-	VkFormat swapchainFormat = VK_FORMAT_B8G8R8A8_SRGB; // we should query this
+	VkFormat swapchainFormat = VK_FORMAT_R8G8B8A8_UNORM; // we should query this
 	TRM_Renderer_createSwapchain(
 		pState->pAllocator,
 		pState->physicalDevice,
@@ -366,7 +544,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, NULL);
 	TRM_Memory_allocate(sizeof(VkImage) * pState->swapchainImageCount, (void**)&pSwapchainImages);
 	vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, pSwapchainImages);
-	
+
 	TRM_Memory_allocate(sizeof(struct TRM_Renderer_SwapchainImage) * pState->swapchainImageCount, (void**)&pState->pSwapchainImages);
 
 	for(uint32_t swapchainImageIndex = 0; swapchainImageIndex < pState->swapchainImageCount; ++swapchainImageIndex)
@@ -386,7 +564,6 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 
 	TRM_Memory_deallocate(pSwapchainImages);
 
-	
 	TRM_Memory_allocate(sizeof(struct TRM_Renderer_FrameInFlight) * pState->swapchainImageCount, (void**)&pState->pFramesInFlight);
 
 	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
@@ -398,6 +575,34 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	}
 
 	pState->frameIndex = 0;
+
+	// === temporary ===
+
+	VkDescriptorSetLayoutBinding binding = {0};
+	binding.binding = 0;
+	binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	binding.descriptorCount = 1;
+	binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	binding.pImmutableSamplers = NULL;
+	
+	TRM_Renderer_createDescriptorSetLayout(pState->pAllocator, pState->device, 1, &binding, &pState->descriptorSetLayout);
+
+	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
+	{
+		TRM_Renderer_allocateDescriptorSet(pState->device, pState->descriptorPool, pState->descriptorSetLayout, &pState->pFramesInFlight[frameInFlightIndex].descriptorSet);
+	}
+	
+	VkShaderModule computeShaderModule;
+	uint32_t codeSize = 0;
+	uint32_t* pCode = NULL;
+	TRM_Renderer_readShader("../../../assets/shaders/compute.spv", &codeSize, &pCode); // very bad
+	TRM_Renderer_createShaderModule(pState->pAllocator, pState->device, codeSize, pCode, &computeShaderModule);
+	
+	TRM_Renderer_createPipelineLayout(pState->pAllocator, pState->device, 1, &pState->descriptorSetLayout, &pState->computePipelineLayout);
+	TRM_Renderer_createComputePipeline(pState->pAllocator, pState->device, computeShaderModule, pState->computePipelineLayout, &pState->computePipeline);
+	
+	vkDestroyShaderModule(pState->device, computeShaderModule, pState->pAllocator);
+	TRM_Memory_deallocate(pCode);
 }
 
 void TRM_Renderer_terminate(void)
@@ -409,11 +614,16 @@ void TRM_Renderer_terminate(void)
 			exit(EXIT_FAILURE);
 		}
 
+		vkDestroyPipeline(pState->device, pState->computePipeline, pState->pAllocator);
+		vkDestroyPipelineLayout(pState->device, pState->computePipelineLayout, pState->pAllocator);
+
 		for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
 		{
 			vkDestroySemaphore(pState->device, pState->pFramesInFlight[frameInFlightIndex].imageAvailableSemaphore, pState->pAllocator);
 			vkDestroyFence(pState->device, pState->pFramesInFlight[frameInFlightIndex].commandBufferExecutedFence, pState->pAllocator);
 		}
+
+		vkDestroyDescriptorSetLayout(pState->device, pState->descriptorSetLayout, pState->pAllocator);
 		
 		TRM_Memory_deallocate(pState->pFramesInFlight);
 
@@ -426,6 +636,7 @@ void TRM_Renderer_terminate(void)
 		TRM_Memory_deallocate(pState->pSwapchainImages);
 		
 		vkDestroySwapchainKHR(pState->device, pState->swapchain, pState->pAllocator);
+		vkDestroyDescriptorPool(pState->device, pState->descriptorPool, pState->pAllocator);
 		vkDestroyCommandPool(pState->device, pState->commandPool, pState->pAllocator);
 		vkDestroyDevice(pState->device, pState->pAllocator);
 		vkDestroySurfaceKHR(pState->instance, pState->surface, pState->pAllocator);
@@ -454,12 +665,37 @@ void TRM_Renderer_render(void)
 	}
 
 	uint32_t imageIndex = 0;
-	if(vkAcquireNextImageKHR(pState->device, pState->swapchain, UINT64_MAX, pState->pFramesInFlight[pState->frameIndex].imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex) != VK_SUCCESS)
+	if(vkAcquireNextImageKHR(
+		pState->device, 
+		pState->swapchain, 
+		UINT64_MAX, 
+		pState->pFramesInFlight[pState->frameIndex].imageAvailableSemaphore, 
+		VK_NULL_HANDLE, 
+		&imageIndex) != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
 	}
 
 	pState->pFramesInFlight[pState->frameIndex].imageIndex = imageIndex;
+
+	VkDescriptorImageInfo imageInfo = {0};
+	imageInfo.sampler = VK_NULL_HANDLE;
+	imageInfo.imageView = pState->pSwapchainImages[imageIndex].imageView;
+	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkWriteDescriptorSet descriptorWrite = {0};
+	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrite.pNext = NULL;
+	descriptorWrite.dstSet = pState->pFramesInFlight[pState->frameIndex].descriptorSet;
+	descriptorWrite.dstBinding = 0;
+	descriptorWrite.dstArrayElement = 0;
+	descriptorWrite.descriptorCount = 1;
+	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	descriptorWrite.pImageInfo = &imageInfo;
+	descriptorWrite.pBufferInfo = NULL;
+	descriptorWrite.pTexelBufferView = NULL;
+
+	vkUpdateDescriptorSets(pState->device, 1, &descriptorWrite, 0, NULL);
 
 	vkResetCommandBuffer(pState->pFramesInFlight[pState->frameIndex].commandBuffer, 0);
 
@@ -480,7 +716,7 @@ void TRM_Renderer_render(void)
 		imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		imageMemoryBarrier.pNext = NULL;
 		imageMemoryBarrier.srcAccessMask = 0;
-		imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		imageMemoryBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		imageMemoryBarrier.oldLayout = pState->pSwapchainImages[imageIndex].transitionned ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED;
 		imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 		imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -492,30 +728,29 @@ void TRM_Renderer_render(void)
 		imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
 		imageMemoryBarrier.subresourceRange.layerCount = 1;
 
-		vkCmdPipelineBarrier(pState->pFramesInFlight[pState->frameIndex].commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &imageMemoryBarrier);
+		vkCmdPipelineBarrier(
+			pState->pFramesInFlight[pState->frameIndex].commandBuffer, 
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+			0, 
+			0, 
+			NULL, 
+			0, 
+			NULL, 
+			1, 
+			&imageMemoryBarrier);
 	}
 
-	VkClearColorValue clearColorValue = {0};
-	clearColorValue.float32[0] = 1.0f;
-	clearColorValue.float32[1] = 0.0f;
-	clearColorValue.float32[2] = 0.0f;
-	clearColorValue.float32[3] = 1.0f;
-
-	VkImageSubresourceRange subresourceRange = {0};
-	subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	subresourceRange.baseMipLevel = 0;
-	subresourceRange.levelCount = 1;
-	subresourceRange.baseArrayLayer = 0;
-	subresourceRange.layerCount = 1;
-
-	vkCmdClearColorImage(pState->pFramesInFlight[pState->frameIndex].commandBuffer, pState->pSwapchainImages[imageIndex].image, VK_IMAGE_LAYOUT_GENERAL, &clearColorValue, 1, &subresourceRange);
+	vkCmdBindDescriptorSets(pState->pFramesInFlight[pState->frameIndex].commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pState->computePipelineLayout, 0, 1, &pState->pFramesInFlight[pState->frameIndex].descriptorSet, 0, NULL);
+	vkCmdBindPipeline(pState->pFramesInFlight[pState->frameIndex].commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pState->computePipeline);
+	vkCmdDispatch(pState->pFramesInFlight[pState->frameIndex].commandBuffer, 500 / 8, 500 / 8, 1);
 
 	// transfer dst -> present src
 	{
 		VkImageMemoryBarrier imageMemoryBarrier = {0};
 		imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		imageMemoryBarrier.pNext = NULL;
-		imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		imageMemoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
 		imageMemoryBarrier.dstAccessMask = 0;
 		imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 		imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -528,7 +763,17 @@ void TRM_Renderer_render(void)
 		imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
 		imageMemoryBarrier.subresourceRange.layerCount = 1;
 
-		vkCmdPipelineBarrier(pState->pFramesInFlight[pState->frameIndex].commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &imageMemoryBarrier);
+		vkCmdPipelineBarrier(
+			pState->pFramesInFlight[pState->frameIndex].commandBuffer, 
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
+			0, 
+			0, 
+			NULL, 
+			0, 
+			NULL, 
+			1, 
+			&imageMemoryBarrier);
 	}
 
 	if(vkEndCommandBuffer(pState->pFramesInFlight[pState->frameIndex].commandBuffer) != VK_SUCCESS)
