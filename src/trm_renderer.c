@@ -296,6 +296,7 @@ static void TRM_Renderer_allocateMemoryForBuffer(
 	}
 }
 
+/*
 static void TRM_Renderer_allocateMemoryForImage(
 	const VkAllocationCallbacks* pAllocator,
 	VkPhysicalDevice physicalDevice,
@@ -321,6 +322,7 @@ static void TRM_Renderer_allocateMemoryForImage(
 		exit(EXIT_FAILURE);
 	}
 }
+*/
 
 static void TRM_Renderer_createBuffer(
 	const VkAllocationCallbacks* pAllocator,
@@ -346,6 +348,7 @@ static void TRM_Renderer_createBuffer(
 	}
 }
 
+/*
 static void TRM_Renderer_createImage(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device,
@@ -381,6 +384,7 @@ static void TRM_Renderer_createImage(
 		exit(EXIT_FAILURE);
 	}
 }
+*/
 
 static void TRM_Renderer_createImageView(
 	const VkAllocationCallbacks* pAllocator,
@@ -628,10 +632,10 @@ static void TRM_Renderer_readShader(const char* pPath, uint32_t* pSize, uint32_t
 	}
 
 	fseek(pFile, 0, SEEK_END);
-	*pSize = ftell(pFile);
+	*pSize = (uint32_t)ftell(pFile);
 	rewind(pFile);
 
-	TRM_Memory_allocate(sizeof(uint32_t) * (*pSize), ppCode);
+	TRM_Memory_allocate(sizeof(uint32_t) * (*pSize), (void**)ppCode);
 
 	fread(*ppCode, 1, *pSize, pFile);
 
@@ -763,7 +767,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	VkShaderModule computeShaderModule;
 	uint32_t codeSize = 0;
 	uint32_t* pCode = NULL;
-	TRM_Renderer_readShader("../../../assets/shaders/compute.spv", &codeSize, &pCode); // very bad
+	TRM_Renderer_readShader("../assets/shaders/compute.spv", &codeSize, &pCode); // very bad
 	TRM_Renderer_createShaderModule(pState->pAllocator, pState->device, codeSize, pCode, &computeShaderModule);
 	
 	TRM_Renderer_createPipelineLayout(pState->pAllocator, pState->device, 1, &pState->descriptorSetLayout, &pState->computePipelineLayout);
