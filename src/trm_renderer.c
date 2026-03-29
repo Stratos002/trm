@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <math.h>
 
 struct TRM_Renderer_FrameInFlight
 {
@@ -14,6 +15,8 @@ struct TRM_Renderer_FrameInFlight
 	VkSemaphore imageAvailableSemaphore;
 	uint32_t imageIndex;
 	VkDescriptorSet descriptorSet;
+	VkBuffer uniformBuffer;
+	VkDeviceMemory uniformBufferMemory;
 };
 
 struct TRM_Renderer_SwapchainImage
@@ -240,6 +243,140 @@ static void TRM_Renderer_createSwapchain(
 	swapchainCreateInfo.oldSwapchain = VK_NULL_HANDLE;
 
 	if(vkCreateSwapchainKHR(device, &swapchainCreateInfo, pAllocator, pSwapchain) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_findMemoryTypeIndex(
+	VkPhysicalDevice physicalDevice, 
+	uint32_t compatibleMemoryTypeBits, 
+	VkMemoryPropertyFlags memoryPropertyFlags, 
+	uint32_t* pMemoryTypeIndex)
+{
+	VkPhysicalDeviceMemoryProperties memoryProperties;
+	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+
+	for(uint32_t availableMemoryTypeIndex = 0; availableMemoryTypeIndex < memoryProperties.memoryTypeCount; ++availableMemoryTypeIndex)
+	{
+		if((compatibleMemoryTypeBits & (1 << availableMemoryTypeIndex)) &&
+			(memoryProperties.memoryTypes[availableMemoryTypeIndex].propertyFlags & memoryPropertyFlags) == memoryPropertyFlags)
+		{
+			*pMemoryTypeIndex = availableMemoryTypeIndex;
+			return;
+		}
+	}
+
+	exit(EXIT_FAILURE);
+}
+
+static void TRM_Renderer_allocateMemoryForBuffer(
+	const VkAllocationCallbacks* pAllocator,
+	VkPhysicalDevice physicalDevice,
+	VkDevice device, 
+	VkBuffer buffer,
+	VkMemoryPropertyFlags memoryPropertyFlags,
+	VkDeviceMemory* pMemory)
+{
+	VkMemoryRequirements memoryRequirements;
+	vkGetBufferMemoryRequirements(device, buffer, &memoryRequirements);
+
+	uint32_t memoryTypeIndex = 0;
+	TRM_Renderer_findMemoryTypeIndex(physicalDevice, memoryRequirements.memoryTypeBits, memoryPropertyFlags, &memoryTypeIndex);
+
+	VkMemoryAllocateInfo memoryAllocateInfo = {0};
+	memoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	memoryAllocateInfo.pNext = NULL;
+	memoryAllocateInfo.allocationSize = memoryRequirements.size;
+	memoryAllocateInfo.memoryTypeIndex = memoryTypeIndex;
+
+	if(vkAllocateMemory(device, &memoryAllocateInfo, pAllocator, pMemory) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_allocateMemoryForImage(
+	const VkAllocationCallbacks* pAllocator,
+	VkPhysicalDevice physicalDevice,
+	VkDevice device,
+	VkImage image,
+	VkMemoryPropertyFlags memoryPropertyFlags,
+	VkDeviceMemory* pMemory)
+{
+	VkMemoryRequirements memoryRequirements;
+	vkGetImageMemoryRequirements(device, image, &memoryRequirements);
+
+	uint32_t memoryTypeIndex = 0;
+	TRM_Renderer_findMemoryTypeIndex(physicalDevice, memoryRequirements.memoryTypeBits, memoryPropertyFlags, &memoryTypeIndex);
+
+	VkMemoryAllocateInfo memoryAllocateInfo = {0};
+	memoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	memoryAllocateInfo.pNext = NULL;
+	memoryAllocateInfo.allocationSize = memoryRequirements.size;
+	memoryAllocateInfo.memoryTypeIndex = memoryTypeIndex;
+
+	if(vkAllocateMemory(device, &memoryAllocateInfo, pAllocator, pMemory) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createBuffer(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device,
+	VkDeviceSize size,
+	VkBufferUsageFlags usage,
+	uint32_t queueFamilyIndex,
+	VkBuffer* pBuffer)
+{
+	VkBufferCreateInfo bufferCreateInfo = {0};
+	bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bufferCreateInfo.pNext = NULL;
+	bufferCreateInfo.flags = 0;
+	bufferCreateInfo.size = size;
+	bufferCreateInfo.usage = usage;
+	bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	bufferCreateInfo.queueFamilyIndexCount = 1;
+	bufferCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
+
+	if(vkCreateBuffer(device, &bufferCreateInfo, pAllocator, pBuffer) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createImage(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device,
+	uint32_t width,
+	uint32_t height,
+	VkFormat format,
+	VkImageLayout layout,
+	VkBufferUsageFlags usage,
+	uint32_t queueFamilyIndex,
+	VkImage* pImage)
+{
+	VkImageCreateInfo imageCreateInfo = {0};
+	imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	imageCreateInfo.pNext = NULL;
+	imageCreateInfo.flags = 0;
+	imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+	imageCreateInfo.format = format;
+	imageCreateInfo.extent.width = width;
+	imageCreateInfo.extent.height = height;
+	imageCreateInfo.extent.depth = 1;
+	imageCreateInfo.mipLevels = 1;
+	imageCreateInfo.arrayLayers = 1;
+	imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	imageCreateInfo.usage = usage;
+	imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageCreateInfo.queueFamilyIndexCount = 1;
+	imageCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
+	imageCreateInfo.initialLayout = layout;
+
+	if(vkCreateImage(device, &imageCreateInfo, pAllocator, pImage) != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -578,18 +715,49 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 
 	// === temporary ===
 
-	VkDescriptorSetLayoutBinding binding = {0};
-	binding.binding = 0;
-	binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	binding.descriptorCount = 1;
-	binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-	binding.pImmutableSamplers = NULL;
+	VkDescriptorSetLayoutBinding bindings[2];
+	bindings[0].binding = 0;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[0].descriptorCount = 1;
+	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[0].pImmutableSamplers = NULL;
+
+	bindings[1].binding = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[1].descriptorCount = 1;
+	bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[1].pImmutableSamplers = NULL;
 	
-	TRM_Renderer_createDescriptorSetLayout(pState->pAllocator, pState->device, 1, &binding, &pState->descriptorSetLayout);
+	TRM_Renderer_createDescriptorSetLayout(pState->pAllocator, pState->device, sizeof(bindings) / sizeof(bindings[0]), bindings, &pState->descriptorSetLayout);
 
 	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
 	{
 		TRM_Renderer_allocateDescriptorSet(pState->device, pState->descriptorPool, pState->descriptorSetLayout, &pState->pFramesInFlight[frameInFlightIndex].descriptorSet);
+		
+		TRM_Renderer_createBuffer(
+			pState->pAllocator, 
+			pState->device, 
+			sizeof(float) * 4, 
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+			pState->queueFamilyIndex, 
+			&pState->pFramesInFlight[frameInFlightIndex].uniformBuffer);
+		
+		TRM_Renderer_allocateMemoryForBuffer(
+			pState->pAllocator, 
+			pState->physicalDevice, 
+			pState->device, 
+			pState->pFramesInFlight[frameInFlightIndex].uniformBuffer, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&pState->pFramesInFlight[frameInFlightIndex].uniformBufferMemory);
+
+		if(vkBindBufferMemory(
+			pState->device, 
+			pState->pFramesInFlight[frameInFlightIndex].uniformBuffer, 
+			pState->pFramesInFlight[frameInFlightIndex].uniformBufferMemory, 
+			0) != VK_SUCCESS)
+		{
+			exit(EXIT_FAILURE);
+		}
 	}
 	
 	VkShaderModule computeShaderModule;
@@ -619,6 +787,8 @@ void TRM_Renderer_terminate(void)
 
 		for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
 		{
+			vkFreeMemory(pState->device, pState->pFramesInFlight[frameInFlightIndex].uniformBufferMemory, pState->pAllocator);
+			vkDestroyBuffer(pState->device, pState->pFramesInFlight[frameInFlightIndex].uniformBuffer, pState->pAllocator);
 			vkDestroySemaphore(pState->device, pState->pFramesInFlight[frameInFlightIndex].imageAvailableSemaphore, pState->pAllocator);
 			vkDestroyFence(pState->device, pState->pFramesInFlight[frameInFlightIndex].commandBufferExecutedFence, pState->pAllocator);
 		}
@@ -676,6 +846,17 @@ void TRM_Renderer_render(void)
 		exit(EXIT_FAILURE);
 	}
 
+	{
+		static float toy = 0.0f;
+		float color[4] = {(cosf(toy) + 1) / 2, (sinf(toy) + 1) / 2, (cosf(toy) + 1) / 2, 1.0f};
+		toy += 0.01f;
+
+		void* pData = NULL;
+		vkMapMemory(pState->device, pState->pFramesInFlight[pState->frameIndex].uniformBufferMemory, 0, sizeof(color), 0, &pData);
+		TRM_Memory_memcpy(sizeof(color), color, pData);
+		vkUnmapMemory(pState->device, pState->pFramesInFlight[pState->frameIndex].uniformBufferMemory);
+	}
+
 	pState->pFramesInFlight[pState->frameIndex].imageIndex = imageIndex;
 
 	VkDescriptorImageInfo imageInfo = {0};
@@ -683,19 +864,35 @@ void TRM_Renderer_render(void)
 	imageInfo.imageView = pState->pSwapchainImages[imageIndex].imageView;
 	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-	VkWriteDescriptorSet descriptorWrite = {0};
-	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrite.pNext = NULL;
-	descriptorWrite.dstSet = pState->pFramesInFlight[pState->frameIndex].descriptorSet;
-	descriptorWrite.dstBinding = 0;
-	descriptorWrite.dstArrayElement = 0;
-	descriptorWrite.descriptorCount = 1;
-	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	descriptorWrite.pImageInfo = &imageInfo;
-	descriptorWrite.pBufferInfo = NULL;
-	descriptorWrite.pTexelBufferView = NULL;
+	VkDescriptorBufferInfo bufferInfo = {0};
+	bufferInfo.buffer = pState->pFramesInFlight[pState->frameIndex].uniformBuffer;
+	bufferInfo.offset = 0;
+	bufferInfo.range = VK_WHOLE_SIZE;
 
-	vkUpdateDescriptorSets(pState->device, 1, &descriptorWrite, 0, NULL);
+	VkWriteDescriptorSet descriptorWrites[2];
+	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[0].pNext = NULL;
+	descriptorWrites[0].dstSet = pState->pFramesInFlight[pState->frameIndex].descriptorSet;
+	descriptorWrites[0].dstBinding = 0;
+	descriptorWrites[0].dstArrayElement = 0;
+	descriptorWrites[0].descriptorCount = 1;
+	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	descriptorWrites[0].pImageInfo = &imageInfo;
+	descriptorWrites[0].pBufferInfo = NULL;
+	descriptorWrites[0].pTexelBufferView = NULL;
+
+	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[1].pNext = NULL;
+	descriptorWrites[1].dstSet = pState->pFramesInFlight[pState->frameIndex].descriptorSet;
+	descriptorWrites[1].dstBinding = 1;
+	descriptorWrites[1].dstArrayElement = 0;
+	descriptorWrites[1].descriptorCount = 1;
+	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	descriptorWrites[1].pImageInfo = NULL;
+	descriptorWrites[1].pBufferInfo = &bufferInfo;
+	descriptorWrites[1].pTexelBufferView = NULL;
+
+	vkUpdateDescriptorSets(pState->device, sizeof(descriptorWrites) / sizeof(descriptorWrites[0]), descriptorWrites, 0, NULL);
 
 	vkResetCommandBuffer(pState->pFramesInFlight[pState->frameIndex].commandBuffer, 0);
 
