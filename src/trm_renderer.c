@@ -1,11 +1,13 @@
 #include "trm_renderer.h"
 #include "trm_memory.h"
+#include "trm_containers.h"
 
 #define VOLK_IMPLEMENTATION
 #include "volk.h"
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <math.h>
 
 struct TRM_Renderer_FrameInFlight
@@ -44,6 +46,7 @@ struct TRM_Renderer_State
 	struct TRM_Renderer_FrameInFlight* pFramesInFlight;
 	uint32_t frameIndex;
 
+	struct TRM_DynamicArray resources;
 	VkDescriptorSetLayout descriptorSetLayout;
 	VkPipelineLayout computePipelineLayout;
 	VkPipeline computePipeline;
@@ -238,7 +241,7 @@ static void TRM_Renderer_createSwapchain(
 	swapchainCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
 	swapchainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-	swapchainCreateInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+	swapchainCreateInfo.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
 	swapchainCreateInfo.clipped = VK_TRUE;
 	swapchainCreateInfo.oldSwapchain = VK_NULL_HANDLE;
 
@@ -642,6 +645,339 @@ static void TRM_Renderer_readShader(const char* pPath, uint32_t* pSize, uint32_t
 	fclose(pFile);
 }
 
+struct TRM_Renderer_ResourceInfoBuffer
+{
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+};
+
+struct TRM_Renderer_ResourceInfoImage
+{
+	VkImage image;
+	VkImageLayout layout;
+	VkImageAspectFlags aspectFlags;
+};
+
+enum TRM_Renderer_ResourceType
+{
+	TRM_RENDERER_RESOURCE_TYPE_BUFFER,
+	TRM_RENDERER_RESOURCE_TYPE_IMAGE
+};
+
+struct TRM_Renderer_Resource
+{
+	enum TRM_Renderer_ResourceType type;
+	VkPipelineStageFlags stageFlags;
+	VkAccessFlags accessFlags;
+	union
+	{
+		struct TRM_Renderer_ResourceInfoBuffer buffer;
+		struct TRM_Renderer_ResourceInfoImage image;
+	} info;
+};
+
+enum TRM_Renderer_PassType
+{
+	TRM_RENDERER_PASS_TYPE_DISPATCH,
+	TRM_RENDERER_PASS_TYPE_IMAGE_COPY,
+	TRM_RENDERER_PASS_TYPE_PRESENT
+};
+
+struct TRM_Renderer_PassInfoDispatch
+{
+	uint32_t groupCountX;
+	uint32_t groupCountY;
+	uint32_t groupCountZ;
+	VkPipelineLayout pipelineLayout;
+	uint32_t descriptorSetCount;
+	VkDescriptorSet* pDescriptorSets;
+	VkPipeline pipeline;
+};
+
+struct TRM_Renderer_PassInfoImageCopy
+{
+	VkImageCopy imageCopy;
+};
+
+struct TRM_Renderer_ResourceAccess
+{
+	uint32_t resourceIndex;
+	VkPipelineStageFlags stageFlags;
+	VkAccessFlags accessFlags;
+	VkImageLayout layout;
+};
+
+struct TRM_Renderer_Pass
+{
+	enum TRM_Renderer_PassType type;
+	uint32_t inputCount;
+	uint32_t outputCount;
+	struct TRM_Renderer_ResourceAccess* pInputs;
+	struct TRM_Renderer_ResourceAccess* pOutputs;
+	union
+	{
+		struct TRM_Renderer_PassInfoDispatch dispatch;
+		struct TRM_Renderer_PassInfoImageCopy imageCopy;
+	} info;
+};
+
+// draw
+// draw indirect
+// refacto
+// samplers
+// validation
+// reordering
+// aliasing
+
+static void TRM_Renderer_fillCommandBuffer(
+	struct TRM_Renderer_Resource* pResources, 
+	uint32_t passCount,
+	struct TRM_Renderer_Pass* pPasses,
+	VkCommandBuffer commandBuffer)
+{
+	vkResetCommandBuffer(commandBuffer, 0);
+
+	VkCommandBufferBeginInfo commandBufferBeginInfo = {0};
+	commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	commandBufferBeginInfo.pNext = NULL;
+	commandBufferBeginInfo.flags = 0;
+	commandBufferBeginInfo.pInheritanceInfo = NULL;
+
+	if(vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+
+	for(uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
+	{
+		uint32_t needBarrier = 0;
+
+		VkPipelineStageFlags srcStageFlags = 0;
+		VkPipelineStageFlags dstStageFlags = 0;
+		struct TRM_DynamicArray bufferMemoryBarriers;
+		struct TRM_DynamicArray imageMemoryBarriers;
+
+		TRM_DynamicArray_create(sizeof(VkBufferMemoryBarrier), &bufferMemoryBarriers);
+		TRM_DynamicArray_create(sizeof(VkImageMemoryBarrier), &imageMemoryBarriers);
+
+		// read after write (memory) + layout
+		for(uint32_t inputIndex = 0; inputIndex < pPasses[passIndex].inputCount; ++inputIndex)
+		{
+			const struct TRM_Renderer_ResourceAccess currentResourceAccess = pPasses[passIndex].pInputs[inputIndex];
+			const uint32_t resourceIndex = currentResourceAccess.resourceIndex;
+			const struct TRM_Renderer_Resource* pResourceState = &pResources[resourceIndex];
+
+			const uint32_t lastWasWrite = (pResourceState->accessFlags & (
+				VK_ACCESS_SHADER_WRITE_BIT |
+				VK_ACCESS_TRANSFER_WRITE_BIT |
+				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT));
+
+			uint32_t layoutChanged = 0;
+			if(pResourceState->type == TRM_RENDERER_RESOURCE_TYPE_IMAGE)
+			{
+				layoutChanged = (pResourceState->info.image.layout != currentResourceAccess.layout);
+			}
+
+			if(lastWasWrite || layoutChanged)
+			{
+				needBarrier = 1;
+
+				srcStageFlags |= pResourceState->stageFlags;
+				dstStageFlags |= currentResourceAccess.stageFlags;
+
+				if(pResourceState->type == TRM_RENDERER_RESOURCE_TYPE_BUFFER)
+				{
+					VkBufferMemoryBarrier bufferMemoryBarrier = {0};
+					bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+					bufferMemoryBarrier.pNext = NULL;
+					bufferMemoryBarrier.srcAccessMask = pResourceState->accessFlags;
+					bufferMemoryBarrier.dstAccessMask = currentResourceAccess.accessFlags;
+					bufferMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					bufferMemoryBarrier.buffer = pResourceState->info.buffer.buffer;
+					bufferMemoryBarrier.offset = 0;
+					bufferMemoryBarrier.size = VK_WHOLE_SIZE;
+
+					TRM_DynamicArray_push(&bufferMemoryBarrier, &bufferMemoryBarriers);
+				}
+				else if(pResourceState->type == TRM_RENDERER_RESOURCE_TYPE_IMAGE)
+				{
+					VkImageMemoryBarrier imageMemoryBarrier = {0};
+					imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+					imageMemoryBarrier.pNext = NULL;
+					imageMemoryBarrier.srcAccessMask = pResourceState->accessFlags;
+					imageMemoryBarrier.dstAccessMask = currentResourceAccess.accessFlags;
+					imageMemoryBarrier.oldLayout = pResourceState->info.image.layout;
+					imageMemoryBarrier.newLayout = currentResourceAccess.layout;
+					imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					imageMemoryBarrier.image = pResourceState->info.image.image;
+					imageMemoryBarrier.subresourceRange.aspectMask = pResourceState->info.image.aspectFlags;
+					imageMemoryBarrier.subresourceRange.layerCount = 1;
+					imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
+					imageMemoryBarrier.subresourceRange.levelCount = 1;
+					imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
+
+					TRM_DynamicArray_push(&imageMemoryBarrier, &imageMemoryBarriers);
+				}
+			}
+		}
+
+		// write after read/write (execution) + layout
+		for(uint32_t outputIndex = 0; outputIndex < pPasses[passIndex].outputCount; ++outputIndex)
+		{
+			const struct TRM_Renderer_ResourceAccess currentResourceAccess = pPasses[passIndex].pOutputs[outputIndex];
+			const uint32_t resourceIndex = currentResourceAccess.resourceIndex;
+			const struct TRM_Renderer_Resource* pResourceState = &pResources[resourceIndex];
+
+			const uint32_t lastWasWrite = (pResourceState->accessFlags & (
+				VK_ACCESS_SHADER_WRITE_BIT |
+				VK_ACCESS_TRANSFER_WRITE_BIT |
+				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT));
+
+			const uint32_t currentIsWrite = (currentResourceAccess.accessFlags & (
+				VK_ACCESS_SHADER_WRITE_BIT | 
+				VK_ACCESS_TRANSFER_WRITE_BIT | 
+				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | 
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT));
+
+			uint32_t layoutChanged = 0;
+			if(pResourceState->type == TRM_RENDERER_RESOURCE_TYPE_IMAGE)
+			{
+				layoutChanged = (pResourceState->info.image.layout != currentResourceAccess.layout);
+			}
+
+			if(lastWasWrite || currentIsWrite || layoutChanged)
+			{
+				needBarrier = 1;
+
+				srcStageFlags |= pResourceState->stageFlags;
+				dstStageFlags |= currentResourceAccess.stageFlags;
+
+				if(pResourceState->type == TRM_RENDERER_RESOURCE_TYPE_BUFFER)
+				{
+					VkBufferMemoryBarrier bufferMemoryBarrier = {0};
+					bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+					bufferMemoryBarrier.pNext = NULL;
+					bufferMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
+					bufferMemoryBarrier.dstAccessMask = VK_ACCESS_NONE;
+					bufferMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					bufferMemoryBarrier.buffer = pResourceState->info.buffer.buffer;
+					bufferMemoryBarrier.offset = 0;
+					bufferMemoryBarrier.size = VK_WHOLE_SIZE;
+
+					TRM_DynamicArray_push(&bufferMemoryBarrier, &bufferMemoryBarriers);
+				}
+				else if(pResourceState->type == TRM_RENDERER_RESOURCE_TYPE_IMAGE)
+				{
+					VkImageMemoryBarrier imageMemoryBarrier = {0};
+					imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+					imageMemoryBarrier.pNext = NULL;
+					imageMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
+					imageMemoryBarrier.dstAccessMask = VK_ACCESS_NONE;
+					imageMemoryBarrier.oldLayout = pResourceState->info.image.layout;
+					imageMemoryBarrier.newLayout = currentResourceAccess.layout;
+					imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					imageMemoryBarrier.image = pResourceState->info.image.image;
+					imageMemoryBarrier.subresourceRange.aspectMask = pResourceState->info.image.aspectFlags;
+					imageMemoryBarrier.subresourceRange.layerCount = 1;
+					imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
+					imageMemoryBarrier.subresourceRange.levelCount = 1;
+					imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
+
+					TRM_DynamicArray_push(&imageMemoryBarrier, &imageMemoryBarriers);
+				}
+			}
+		}
+
+		if(needBarrier == 1)
+		{
+			vkCmdPipelineBarrier(
+				commandBuffer,
+				srcStageFlags,
+				dstStageFlags,
+				0,
+				0,
+				NULL,
+				bufferMemoryBarriers.elementCount,
+				(VkBufferMemoryBarrier*)bufferMemoryBarriers.pData,
+				imageMemoryBarriers.elementCount,
+				(VkImageMemoryBarrier*)imageMemoryBarriers.pData);
+
+			TRM_DynamicArray_destroy(&bufferMemoryBarriers);
+			TRM_DynamicArray_destroy(&imageMemoryBarriers);
+		}
+
+		// ajout de la commande
+		if(pPasses[passIndex].type == TRM_RENDERER_PASS_TYPE_DISPATCH)
+		{
+			vkCmdBindDescriptorSets(
+				commandBuffer, 
+				VK_PIPELINE_BIND_POINT_COMPUTE, 
+				pPasses[passIndex].info.dispatch.pipelineLayout, 
+				0, 
+				pPasses[passIndex].info.dispatch.descriptorSetCount, 
+				pPasses[passIndex].info.dispatch.pDescriptorSets, 
+				0, 
+				NULL);
+
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pPasses[passIndex].info.dispatch.pipeline);
+			
+			vkCmdDispatch(
+				commandBuffer, 
+				pPasses[passIndex].info.dispatch.groupCountX, 
+				pPasses[passIndex].info.dispatch.groupCountY, 
+				pPasses[passIndex].info.dispatch.groupCountZ);
+		}
+		else if(pPasses[passIndex].type == TRM_RENDERER_PASS_TYPE_IMAGE_COPY)
+		{
+			vkCmdCopyImage(
+				commandBuffer,
+				pResources[pPasses[passIndex].pInputs[0].resourceIndex].info.image.image,
+				pResources[pPasses[passIndex].pInputs[0].resourceIndex].info.image.layout,
+				pResources[pPasses[passIndex].pOutputs[0].resourceIndex].info.image.image,
+				pResources[pPasses[passIndex].pOutputs[0].resourceIndex].info.image.layout,
+				1,
+				&pPasses[passIndex].info.imageCopy.imageCopy);
+		}
+
+		// update last access
+		for(uint32_t inputIndex = 0; inputIndex < pPasses[passIndex].inputCount; ++inputIndex)
+		{
+			const struct TRM_Renderer_ResourceAccess resourceAccess = pPasses[passIndex].pInputs[inputIndex];
+			
+			pResources[resourceAccess.resourceIndex].accessFlags = resourceAccess.accessFlags;
+			pResources[resourceAccess.resourceIndex].stageFlags = resourceAccess.stageFlags;
+
+			if(pResources[resourceAccess.resourceIndex].type == TRM_RENDERER_RESOURCE_TYPE_IMAGE)
+			{
+				pResources[resourceAccess.resourceIndex].info.image.layout = resourceAccess.layout;
+			}
+		}
+		for(uint32_t outputIndex = 0; outputIndex < pPasses[passIndex].outputCount; ++outputIndex)
+		{
+			const struct TRM_Renderer_ResourceAccess resourceAccess = pPasses[passIndex].pOutputs[outputIndex];
+			
+			pResources[resourceAccess.resourceIndex].accessFlags = resourceAccess.accessFlags;
+			pResources[resourceAccess.resourceIndex].stageFlags = resourceAccess.stageFlags;
+
+			if(pResources[resourceAccess.resourceIndex].type == TRM_RENDERER_RESOURCE_TYPE_IMAGE)
+			{
+				pResources[resourceAccess.resourceIndex].info.image.layout = resourceAccess.layout;
+			}
+		}
+	}
+
+	if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
 void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t windowHeight)
 {
 	if(pState != NULL)
@@ -767,7 +1103,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	VkShaderModule computeShaderModule;
 	uint32_t codeSize = 0;
 	uint32_t* pCode = NULL;
-	TRM_Renderer_readShader("../assets/shaders/compute.spv", &codeSize, &pCode); // very bad
+	TRM_Renderer_readShader("../../../assets/shaders/compute.spv", &codeSize, &pCode); // very bad
 	TRM_Renderer_createShaderModule(pState->pAllocator, pState->device, codeSize, pCode, &computeShaderModule);
 	
 	TRM_Renderer_createPipelineLayout(pState->pAllocator, pState->device, 1, &pState->descriptorSetLayout, &pState->computePipelineLayout);
@@ -775,6 +1111,29 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	
 	vkDestroyShaderModule(pState->device, computeShaderModule, pState->pAllocator);
 	TRM_Memory_deallocate(pCode);
+
+	// push resources
+	TRM_DynamicArray_create(sizeof(struct TRM_Renderer_Resource), &pState->resources);
+
+	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
+	{
+		struct TRM_Renderer_Resource image = {0};
+		image.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+		image.stageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		image.accessFlags = VK_ACCESS_NONE;
+		image.info.image.image = pState->pSwapchainImages[frameInFlightIndex].image;
+		image.info.image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		image.info.image.aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+
+		struct TRM_Renderer_Resource uniformBuffer = {0};
+		uniformBuffer.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
+		uniformBuffer.stageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		uniformBuffer.accessFlags = VK_ACCESS_NONE;
+		uniformBuffer.info.buffer.buffer = pState->pFramesInFlight[frameInFlightIndex].uniformBuffer;
+
+		TRM_DynamicArray_push(&image, &pState->resources);
+		TRM_DynamicArray_push(&uniformBuffer, &pState->resources);
+	}
 }
 
 void TRM_Renderer_terminate(void)
@@ -785,6 +1144,8 @@ void TRM_Renderer_terminate(void)
 		{
 			exit(EXIT_FAILURE);
 		}
+
+		TRM_DynamicArray_destroy(&pState->resources);
 
 		vkDestroyPipeline(pState->device, pState->computePipeline, pState->pAllocator);
 		vkDestroyPipelineLayout(pState->device, pState->computePipelineLayout, pState->pAllocator);
@@ -821,7 +1182,7 @@ void TRM_Renderer_terminate(void)
 	}
 }
 
-void TRM_Renderer_render(void)
+void TRM_Renderer_render()
 {
 	if(vkWaitForFences(pState->device, 1, &pState->pFramesInFlight[pState->frameIndex].commandBufferExecutedFence, VK_FALSE, UINT64_MAX) != VK_SUCCESS)
 	{
@@ -898,91 +1259,50 @@ void TRM_Renderer_render(void)
 
 	vkUpdateDescriptorSets(pState->device, sizeof(descriptorWrites) / sizeof(descriptorWrites[0]), descriptorWrites, 0, NULL);
 
-	vkResetCommandBuffer(pState->pFramesInFlight[pState->frameIndex].commandBuffer, 0);
+	struct TRM_Renderer_ResourceAccess inputs[1];
+	inputs[0].resourceIndex = imageIndex * 2 + 1;
+	inputs[0].accessFlags = VK_ACCESS_SHADER_READ_BIT;
+	inputs[0].stageFlags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
-	VkCommandBufferBeginInfo commandBufferBeginInfo = {0};
-	commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	commandBufferBeginInfo.pNext = NULL;
-	commandBufferBeginInfo.flags = 0;
-	commandBufferBeginInfo.pInheritanceInfo = NULL;
+	struct TRM_Renderer_ResourceAccess outputs[1];
+	outputs[0].resourceIndex = imageIndex * 2;
+	outputs[0].accessFlags = VK_ACCESS_SHADER_WRITE_BIT;
+	outputs[0].stageFlags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	outputs[0].layout = VK_IMAGE_LAYOUT_GENERAL;
 
-	if(vkBeginCommandBuffer(pState->pFramesInFlight[pState->frameIndex].commandBuffer, &commandBufferBeginInfo) != VK_SUCCESS)
-	{
-		exit(EXIT_FAILURE);
-	}
+	struct TRM_Renderer_Pass passes[2];
+	passes[0].type = TRM_RENDERER_PASS_TYPE_DISPATCH;
+	passes[0].inputCount = sizeof(inputs) / sizeof(inputs[0]);
+	passes[0].pInputs = inputs;
+	passes[0].outputCount = sizeof(outputs) / sizeof(outputs[0]);
+	passes[0].pOutputs = outputs;
+	passes[0].info.dispatch.groupCountX = (500 + (8 - 1)) / 8;
+	passes[0].info.dispatch.groupCountY = (500 + (8 - 1)) / 8;
+	passes[0].info.dispatch.groupCountZ = 1;
+	passes[0].info.dispatch.descriptorSetCount = 1;
+	passes[0].info.dispatch.pDescriptorSets = &pState->pFramesInFlight[pState->frameIndex].descriptorSet;
+	passes[0].info.dispatch.pipelineLayout = pState->computePipelineLayout;
+	passes[0].info.dispatch.pipeline = pState->computePipeline;
 
-	// src present -> transfer opt
-	{
-		VkImageMemoryBarrier imageMemoryBarrier = {0};
-		imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		imageMemoryBarrier.pNext = NULL;
-		imageMemoryBarrier.srcAccessMask = 0;
-		imageMemoryBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		imageMemoryBarrier.oldLayout = pState->pSwapchainImages[imageIndex].transitionned ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED;
-		imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		imageMemoryBarrier.image = pState->pSwapchainImages[imageIndex].image;
-		imageMemoryBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
-		imageMemoryBarrier.subresourceRange.levelCount = 1;
-		imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
-		imageMemoryBarrier.subresourceRange.layerCount = 1;
+	struct TRM_Renderer_ResourceAccess present;
+	present.resourceIndex = imageIndex * 2;
+	present.accessFlags = VK_ACCESS_NONE;
+	present.stageFlags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+	present.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-		vkCmdPipelineBarrier(
-			pState->pFramesInFlight[pState->frameIndex].commandBuffer, 
-			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-			0, 
-			0, 
-			NULL, 
-			0, 
-			NULL, 
-			1, 
-			&imageMemoryBarrier);
-	}
+	passes[1].type = TRM_RENDERER_PASS_TYPE_PRESENT;
+	passes[1].inputCount = 1;
+	passes[1].pInputs = &present;
+	passes[1].outputCount = 0;
+	passes[1].pOutputs = NULL;
 
-	vkCmdBindDescriptorSets(pState->pFramesInFlight[pState->frameIndex].commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pState->computePipelineLayout, 0, 1, &pState->pFramesInFlight[pState->frameIndex].descriptorSet, 0, NULL);
-	vkCmdBindPipeline(pState->pFramesInFlight[pState->frameIndex].commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pState->computePipeline);
-	vkCmdDispatch(pState->pFramesInFlight[pState->frameIndex].commandBuffer, 500 / 8, 500 / 8, 1);
+	TRM_Renderer_fillCommandBuffer(
+		(struct TRM_Renderer_Resource*)pState->resources.pData, 
+		sizeof(passes) / sizeof(passes[0]), 
+		passes, 
+		pState->pFramesInFlight[pState->frameIndex].commandBuffer);
 
-	// transfer dst -> present src
-	{
-		VkImageMemoryBarrier imageMemoryBarrier = {0};
-		imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		imageMemoryBarrier.pNext = NULL;
-		imageMemoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-		imageMemoryBarrier.dstAccessMask = 0;
-		imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-		imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-		imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		imageMemoryBarrier.image = pState->pSwapchainImages[imageIndex].image;
-		imageMemoryBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
-		imageMemoryBarrier.subresourceRange.levelCount = 1;
-		imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
-		imageMemoryBarrier.subresourceRange.layerCount = 1;
-
-		vkCmdPipelineBarrier(
-			pState->pFramesInFlight[pState->frameIndex].commandBuffer, 
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
-			0, 
-			0, 
-			NULL, 
-			0, 
-			NULL, 
-			1, 
-			&imageMemoryBarrier);
-	}
-
-	if(vkEndCommandBuffer(pState->pFramesInFlight[pState->frameIndex].commandBuffer) != VK_SUCCESS)
-	{
-		exit(EXIT_FAILURE);
-	}
-
-	VkPipelineStageFlags waitDstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+	VkPipelineStageFlags waitDstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
 	VkSubmitInfo submitInfo = {0};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;

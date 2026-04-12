@@ -13,7 +13,7 @@ file(GLOB_RECURSE SOURCES src/*.c src/*.h)
 
 add_executable(
 	${PROJECT_NAME} 
-	${SOURCES})
+	${SOURCES}  )
 
 target_include_directories(
 	${PROJECT_NAME} 
