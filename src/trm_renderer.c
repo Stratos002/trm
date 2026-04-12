@@ -1182,7 +1182,7 @@ void TRM_Renderer_terminate(void)
 	}
 }
 
-void TRM_Renderer_render()
+void TRM_Renderer_render(void)
 {
 	if(vkWaitForFences(pState->device, 1, &pState->pFramesInFlight[pState->frameIndex].commandBufferExecutedFence, VK_FALSE, UINT64_MAX) != VK_SUCCESS)
 	{
