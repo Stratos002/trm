@@ -715,6 +715,7 @@ static void TRM_Renderer_createComputePipeline(
 	}
 }
 
+/*
 static void TRM_Renderer_createRenderPass(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device, 
@@ -777,7 +778,9 @@ static void TRM_Renderer_createRenderPass(
 		exit(EXIT_FAILURE);
 	}
 }
+*/
 
+/*
 static void TRM_Renderer_createGraphicsPipeline(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device,
@@ -928,6 +931,7 @@ static void TRM_Renderer_createGraphicsPipeline(
 		exit(EXIT_FAILURE);
 	}
 }
+*/
 
 // todo : move this
 static void TRM_Renderer_readShader(const char* pPath, uint32_t* pSize, uint32_t** ppCode)
@@ -1315,8 +1319,6 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		swapchainColorImage.info.image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		swapchainColorImage.info.image.aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
 		swapchainColorImage.info.image.swapchainImage = true;
-
-		pState->pSwapchainImageInfos[swapchainImageIndex].colorImageIndex;
 
 		TRM_Arena_add(
 			(void*)&swapchainColorImage, 
