@@ -11,5 +11,12 @@ void main()
 {
 	const ivec2 invocationID = ivec2(gl_GlobalInvocationID.xy);
 
-	imageStore(image, invocationID, uniformBuffer.color);
+	vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
+
+	if(invocationID.x % 8 > 1 || invocationID.y % 8 > 1)
+	{
+		color = uniformBuffer.color;
+	}
+
+	imageStore(image, invocationID, color);
 }

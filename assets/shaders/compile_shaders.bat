@@ -6,5 +6,7 @@ if "%VK_SDK_PATH%"=="" (
 )
 
 "%VK_SDK_PATH%\Bin\glslc.exe" compute.comp -o compute.spv
+"%VK_SDK_PATH%\Bin\glslc.exe" vertex.vert -o vertex.spv
+"%VK_SDK_PATH%\Bin\glslc.exe" fragment.frag -o fragment.spv
 
 pause

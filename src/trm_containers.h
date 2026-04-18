@@ -22,6 +22,27 @@ void TRM_DynamicArray_push(const void* pElement, struct TRM_DynamicArray* pDynam
 
 void TRM_DynamicArray_at(uint32_t index, const struct TRM_DynamicArray* pDynamicArray, void* pElement);
 
+/* Arena */
+
+struct TRM_Arena
+{
+	size_t elementSize;
+	uint32_t elementCapacity;
+	uint32_t freeIndexCount;
+	uint32_t* pFreeIndices;
+	void* pData;
+};
+
+void TRM_Arena_create(size_t elementSize, uint32_t elementCapacity, struct TRM_Arena* pArena);
+
+void TRM_Arena_destroy(struct TRM_Arena* pArena);
+
+void TRM_Arena_add(const void* pElement, struct TRM_Arena* pArena, uint32_t* pElementIndex);
+
+void TRM_Arena_remove(uint32_t elementIndex, struct TRM_Arena* pArena);
+
+void TRM_Arena_get(uint32_t elementIndex, struct TRM_Arena arena, void** ppElement);
+
 /* Linked List */
 
 struct TRM_LinkedList_Node

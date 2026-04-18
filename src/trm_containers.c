@@ -46,6 +46,48 @@ void TRM_DynamicArray_at(uint32_t index, const struct TRM_DynamicArray* pDynamic
 	TRM_Memory_memcpy(pDynamicArray->elementSize, (uint8_t*)pDynamicArray->pData + pDynamicArray->elementSize * index, pElement);
 }
 
+/* Arena */
+
+void TRM_Arena_create(size_t elementSize, uint32_t elementCapacity, struct TRM_Arena* pArena)
+{
+	TRM_Memory_allocate(elementSize * elementCapacity, &pArena->pData);
+	TRM_Memory_allocate(sizeof(uint32_t) * elementCapacity, (void**)&pArena->pFreeIndices);
+	pArena->elementSize = elementSize;
+	pArena->elementCapacity = elementCapacity;
+
+	for(uint32_t i = 0; i < elementCapacity; ++i)
+	{
+		pArena->pFreeIndices[i] = elementCapacity - i - 1;
+	}
+	
+	pArena->freeIndexCount = elementCapacity;
+}
+
+void TRM_Arena_destroy(struct TRM_Arena* pArena)
+{
+	TRM_Memory_deallocate(pArena->pData);
+	TRM_Memory_deallocate(pArena->pFreeIndices);
+}
+
+void TRM_Arena_add(const void* pElement, struct TRM_Arena* pArena, uint32_t* pElementIndex)
+{
+	uint32_t elementIndex = pArena->pFreeIndices[pArena->freeIndexCount - 1];
+	TRM_Memory_memcpy(pArena->elementSize, pElement, (uint8_t*)pArena->pData + pArena->elementSize * elementIndex);
+	--pArena->freeIndexCount;
+	*pElementIndex = elementIndex;
+}
+
+void TRM_Arena_remove(uint32_t elementIndex, struct TRM_Arena* pArena)
+{
+	pArena->pFreeIndices[pArena->freeIndexCount] = elementIndex;
+	++pArena->freeIndexCount;
+}
+
+void TRM_Arena_get(uint32_t elementIndex, struct TRM_Arena arena, void** ppElement)
+{
+	*ppElement = (uint8_t*)arena.pData + arena.elementSize * elementIndex;
+}
+
 /* Linked List */
 
 static void TRM_LinkedList_createNode(const void* pElement, const struct TRM_LinkedList* pLinkedList, struct TRM_LinkedList_Node** ppNode)

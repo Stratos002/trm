@@ -9,24 +9,120 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdbool.h>
 
-struct TRM_Renderer_FrameInFlight
+#define TRM_RENDERER_FRAME_COUNT 3
+#define TRM_RENDERER_MAX_RESOURCE_COUNT 64
+
+struct TRM_Renderer_ResourceInfoBuffer
+{
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+};
+
+struct TRM_Renderer_ResourceInfoImage
+{
+	VkImage image;
+	VkImageView imageView;
+	VkDeviceMemory memory;
+	VkImageLayout layout;
+	VkImageAspectFlags aspectFlags;
+	bool swapchainImage;
+};
+
+enum TRM_Renderer_ResourceType
+{
+	TRM_RENDERER_RESOURCE_TYPE_BUFFER,
+	TRM_RENDERER_RESOURCE_TYPE_IMAGE
+};
+
+struct TRM_Renderer_Resource
+{
+	enum TRM_Renderer_ResourceType type;
+	VkPipelineStageFlags stageFlags;
+	VkAccessFlags accessFlags;
+	union
+	{
+		struct TRM_Renderer_ResourceInfoBuffer buffer;
+		struct TRM_Renderer_ResourceInfoImage image;
+	} info;
+};
+
+enum TRM_Renderer_PassType
+{
+	TRM_RENDERER_PASS_TYPE_DISPATCH,
+	TRM_RENDERER_PASS_TYPE_DRAW,
+	TRM_RENDERER_PASS_TYPE_IMAGE_COPY,
+	TRM_RENDERER_PASS_TYPE_PRESENT
+};
+
+struct TRM_Renderer_PassInfoDispatch
+{
+	uint32_t groupCountX;
+	uint32_t groupCountY;
+	uint32_t groupCountZ;
+	VkPipelineLayout pipelineLayout;
+	uint32_t descriptorSetCount;
+	VkDescriptorSet* pDescriptorSets;
+	VkPipeline pipeline;
+};
+
+struct TRM_Renderer_PassInfoDraw
+{
+	uint32_t width;
+	uint32_t height;
+	uint32_t vertexCount;
+	VkRenderPass renderPass;
+	VkFramebuffer framebuffer;
+	VkPipelineLayout pipelineLayout;
+	uint32_t descriptorSetCount;
+	VkDescriptorSet* pDescriptorSets;
+	VkPipeline pipeline;
+};
+
+struct TRM_Renderer_PassInfoImageCopy
+{
+	VkImageCopy imageCopy;
+};
+
+struct TRM_Renderer_ResourceAccess
+{
+	uint32_t resourceIndex;
+	VkPipelineStageFlags stageFlags;
+	VkAccessFlags accessFlags;
+	VkImageLayout layout;
+};
+
+struct TRM_Renderer_Pass
+{
+	enum TRM_Renderer_PassType type;
+	uint32_t inputCount;
+	uint32_t outputCount;
+	struct TRM_Renderer_ResourceAccess* pInputs;
+	struct TRM_Renderer_ResourceAccess* pOutputs;
+	union
+	{
+		struct TRM_Renderer_PassInfoDispatch dispatch;
+		struct TRM_Renderer_PassInfoDraw draw; // input0 : vertex buffer / outputs = attachments
+		struct TRM_Renderer_PassInfoImageCopy imageCopy;
+	} info;
+};
+
+struct TRM_Renderer_FrameInfo
 {
 	VkCommandBuffer commandBuffer;
 	VkFence commandBufferExecutedFence;
 	VkSemaphore imageAvailableSemaphore;
-	uint32_t imageIndex;
 	VkDescriptorSet descriptorSet;
-	VkBuffer uniformBuffer;
-	VkDeviceMemory uniformBufferMemory;
+	uint32_t uniformBufferIndex;
+	uint32_t imageIndex;
 };
 
-struct TRM_Renderer_SwapchainImage
+struct TRM_Renderer_SwapchainImageInfo
 {
-	VkImage image;
-	VkImageView imageView;
 	VkSemaphore imageRenderedSemaphore;
-	VkBool32 transitionned;
+	uint32_t colorImageIndex;
+	uint32_t depthImageIndex;
 };
 
 struct TRM_Renderer_State
@@ -42,14 +138,13 @@ struct TRM_Renderer_State
 	VkDescriptorPool descriptorPool;
 	VkSwapchainKHR swapchain;
 	uint32_t swapchainImageCount;
-	struct TRM_Renderer_SwapchainImage* pSwapchainImages;
-	struct TRM_Renderer_FrameInFlight* pFramesInFlight;
+	struct TRM_Renderer_SwapchainImageInfo* pSwapchainImageInfos;
+	struct TRM_Renderer_FrameInfo* pFrameInfos;
 	uint32_t frameIndex;
-
-	struct TRM_DynamicArray resources;
+	struct TRM_Arena resources;
 	VkDescriptorSetLayout descriptorSetLayout;
-	VkPipelineLayout computePipelineLayout;
 	VkPipeline computePipeline;
+	VkPipelineLayout computePipelineLayout;
 };
 
 static struct TRM_Renderer_State* pState = NULL;
@@ -241,7 +336,7 @@ static void TRM_Renderer_createSwapchain(
 	swapchainCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
 	swapchainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-	swapchainCreateInfo.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+	swapchainCreateInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
 	swapchainCreateInfo.clipped = VK_TRUE;
 	swapchainCreateInfo.oldSwapchain = VK_NULL_HANDLE;
 
@@ -299,7 +394,6 @@ static void TRM_Renderer_allocateMemoryForBuffer(
 	}
 }
 
-/*
 static void TRM_Renderer_allocateMemoryForImage(
 	const VkAllocationCallbacks* pAllocator,
 	VkPhysicalDevice physicalDevice,
@@ -325,7 +419,6 @@ static void TRM_Renderer_allocateMemoryForImage(
 		exit(EXIT_FAILURE);
 	}
 }
-*/
 
 static void TRM_Renderer_createBuffer(
 	const VkAllocationCallbacks* pAllocator,
@@ -351,7 +444,6 @@ static void TRM_Renderer_createBuffer(
 	}
 }
 
-/*
 static void TRM_Renderer_createImage(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device,
@@ -359,7 +451,7 @@ static void TRM_Renderer_createImage(
 	uint32_t height,
 	VkFormat format,
 	VkImageLayout layout,
-	VkBufferUsageFlags usage,
+	VkImageUsageFlags usage,
 	uint32_t queueFamilyIndex,
 	VkImage* pImage)
 {
@@ -387,7 +479,6 @@ static void TRM_Renderer_createImage(
 		exit(EXIT_FAILURE);
 	}
 }
-*/
 
 static void TRM_Renderer_createImageView(
 	const VkAllocationCallbacks* pAllocator,
@@ -609,16 +700,230 @@ static void TRM_Renderer_createComputePipeline(
 	shaderStageCreateInfo.pName = "main";
 	shaderStageCreateInfo.pSpecializationInfo = NULL;
 
-	VkComputePipelineCreateInfo computPipelineCreateInfo = {0};
-	computPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-	computPipelineCreateInfo.pNext = VK_NULL_HANDLE;
-	computPipelineCreateInfo.flags = 0;
-	computPipelineCreateInfo.stage = shaderStageCreateInfo;
-	computPipelineCreateInfo.layout = pipelineLayout;
-	computPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
-	computPipelineCreateInfo.basePipelineIndex = 0;
+	VkComputePipelineCreateInfo computePipelineCreateInfo = {0};
+	computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	computePipelineCreateInfo.pNext = VK_NULL_HANDLE;
+	computePipelineCreateInfo.flags = 0;
+	computePipelineCreateInfo.stage = shaderStageCreateInfo;
+	computePipelineCreateInfo.layout = pipelineLayout;
+	computePipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+	computePipelineCreateInfo.basePipelineIndex = 0;
 
-	if(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computPipelineCreateInfo, pAllocator, pComputePipeline) != VK_SUCCESS)
+	if(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, pAllocator, pComputePipeline) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createRenderPass(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device, 
+	VkRenderPass* pRenderPass)
+{
+	VkAttachmentDescription attachmentDescriptions[2];
+	attachmentDescriptions[0].flags = 0;
+	attachmentDescriptions[0].format = VK_FORMAT_R8G8B8_SRGB;
+	attachmentDescriptions[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachmentDescriptions[0].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachmentDescriptions[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachmentDescriptions[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachmentDescriptions[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachmentDescriptions[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachmentDescriptions[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	attachmentDescriptions[1].flags = 0;
+	attachmentDescriptions[1].format = VK_FORMAT_D32_SFLOAT;
+	attachmentDescriptions[1].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachmentDescriptions[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachmentDescriptions[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachmentDescriptions[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachmentDescriptions[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachmentDescriptions[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachmentDescriptions[1].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	VkAttachmentReference colorAttachmentReference = {0};
+	colorAttachmentReference.attachment = 0;
+	colorAttachmentReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	VkAttachmentReference depthAttachmentReference = {0};
+	depthAttachmentReference.attachment = 1;
+	depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+	VkSubpassDescription subpassDescription = {0};
+	subpassDescription.flags = 0;
+	subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpassDescription.inputAttachmentCount = 0;
+	subpassDescription.pInputAttachments = NULL;
+	subpassDescription.colorAttachmentCount = 1;
+	subpassDescription.pColorAttachments = &colorAttachmentReference;
+	subpassDescription.pResolveAttachments = NULL;
+	subpassDescription.pDepthStencilAttachment = &depthAttachmentReference;
+	subpassDescription.preserveAttachmentCount = 0;
+	subpassDescription.pPreserveAttachments = NULL;
+
+	VkRenderPassCreateInfo renderPassCreateInfo = {0};
+	renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	renderPassCreateInfo.pNext = NULL;
+	renderPassCreateInfo.flags = 0;
+	renderPassCreateInfo.attachmentCount = sizeof(attachmentDescriptions) / sizeof(attachmentDescriptions[0]);
+	renderPassCreateInfo.pAttachments = attachmentDescriptions;
+	renderPassCreateInfo.subpassCount = 1;
+	renderPassCreateInfo.pSubpasses = &subpassDescription;
+	renderPassCreateInfo.dependencyCount = 0;
+	renderPassCreateInfo.pDependencies = NULL;
+
+	if(vkCreateRenderPass(device, &renderPassCreateInfo, pAllocator, pRenderPass) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void TRM_Renderer_createGraphicsPipeline(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device,
+	VkShaderModule vertexShaderModule,
+	VkShaderModule fragmentShaderModule,
+	VkPipelineVertexInputStateCreateInfo vertexInputStateCreateInfo,
+	VkPipelineLayout pipelineLayout,
+	VkRenderPass renderPass,
+	uint32_t viewportWidth,
+	uint32_t viewportHeight,
+	VkPipeline* pGraphicsPipeline)
+{
+	VkPipelineShaderStageCreateInfo shaderStageCreateInfos[2];
+	shaderStageCreateInfos[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shaderStageCreateInfos[0].pNext = NULL;
+	shaderStageCreateInfos[0].flags = 0;
+	shaderStageCreateInfos[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	shaderStageCreateInfos[0].module = vertexShaderModule;
+	shaderStageCreateInfos[0].pName = "main";
+	shaderStageCreateInfos[0].pSpecializationInfo = NULL;
+
+	shaderStageCreateInfos[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shaderStageCreateInfos[1].pNext = NULL;
+	shaderStageCreateInfos[1].flags = 0;
+	shaderStageCreateInfos[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	shaderStageCreateInfos[1].module = fragmentShaderModule;
+	shaderStageCreateInfos[1].pName = "main";
+	shaderStageCreateInfos[1].pSpecializationInfo = NULL;
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssemblyStateCreateInfo = {0};
+	inputAssemblyStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssemblyStateCreateInfo.pNext = NULL;
+	inputAssemblyStateCreateInfo.flags = 0;
+	inputAssemblyStateCreateInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssemblyStateCreateInfo.primitiveRestartEnable = VK_FALSE;
+
+	VkViewport viewport = {0};
+	viewport.x = 0;
+	viewport.y = 0;
+	viewport.width = (float)viewportWidth;
+	viewport.height = (float)viewportHeight;
+	viewport.minDepth = 0;
+	viewport.maxDepth = 1.0f;
+
+	VkRect2D scissor = {0};
+	scissor.offset.x = 0;
+	scissor.offset.y = 0;
+	scissor.extent.width = viewportWidth;
+	scissor.extent.height = viewportHeight;
+
+	VkPipelineViewportStateCreateInfo viewportStateCreateInfo = {0};
+	viewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportStateCreateInfo.pNext = NULL;
+	viewportStateCreateInfo.flags = 0;
+	viewportStateCreateInfo.viewportCount = 1;
+	viewportStateCreateInfo.pViewports = &viewport;
+	viewportStateCreateInfo.scissorCount = 1;
+	viewportStateCreateInfo.pScissors = &scissor;
+
+	VkPipelineRasterizationStateCreateInfo rasterizationStateCreateInfo = {0};
+	rasterizationStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizationStateCreateInfo.pNext = NULL;
+	rasterizationStateCreateInfo.flags = 0;
+	rasterizationStateCreateInfo.depthClampEnable = VK_FALSE;
+	rasterizationStateCreateInfo.rasterizerDiscardEnable = VK_FALSE;
+	rasterizationStateCreateInfo.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizationStateCreateInfo.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizationStateCreateInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizationStateCreateInfo.depthBiasEnable = VK_FALSE;
+	rasterizationStateCreateInfo.depthBiasConstantFactor = 0.0f;
+	rasterizationStateCreateInfo.depthBiasClamp = 0.0f;
+	rasterizationStateCreateInfo.depthBiasSlopeFactor = 0.0f;
+	rasterizationStateCreateInfo.lineWidth = 1.0f;
+
+	VkPipelineMultisampleStateCreateInfo multisampleStateCreateInfo = {0};
+	multisampleStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampleStateCreateInfo.pNext = NULL;
+	multisampleStateCreateInfo.flags = 0;
+	multisampleStateCreateInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	multisampleStateCreateInfo.sampleShadingEnable = VK_FALSE;
+	multisampleStateCreateInfo.minSampleShading = 0.0f;
+	multisampleStateCreateInfo.pSampleMask = NULL;
+	multisampleStateCreateInfo.alphaToCoverageEnable = VK_FALSE;
+	multisampleStateCreateInfo.alphaToOneEnable = VK_FALSE;
+
+	VkPipelineDepthStencilStateCreateInfo depthStencilStateCreateInfo = {0};
+	depthStencilStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencilStateCreateInfo.pNext = NULL;
+	depthStencilStateCreateInfo.flags = 0;
+	depthStencilStateCreateInfo.depthTestEnable = VK_TRUE;
+	depthStencilStateCreateInfo.depthWriteEnable = VK_TRUE;
+	depthStencilStateCreateInfo.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+	depthStencilStateCreateInfo.depthBoundsTestEnable = VK_FALSE;
+	depthStencilStateCreateInfo.stencilTestEnable = VK_FALSE;
+	depthStencilStateCreateInfo.minDepthBounds = 0.0f;
+	depthStencilStateCreateInfo.maxDepthBounds = 1.0f;
+
+	VkPipelineColorBlendAttachmentState colorBlendAttachment = {0};
+	colorBlendAttachment.blendEnable = VK_FALSE;
+	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+	colorBlendAttachment.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT |
+		VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT |
+		VK_COLOR_COMPONENT_A_BIT;
+
+	VkPipelineColorBlendStateCreateInfo colorBlendStateInfo = {0};
+	colorBlendStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlendStateInfo.pNext = NULL;
+	colorBlendStateInfo.flags = 0;
+	colorBlendStateInfo.logicOpEnable = VK_FALSE;
+	colorBlendStateInfo.logicOp = VK_LOGIC_OP_COPY;
+	colorBlendStateInfo.attachmentCount = 1;
+	colorBlendStateInfo.pAttachments = &colorBlendAttachment;
+	colorBlendStateInfo.blendConstants[0] = 0.0f;
+	colorBlendStateInfo.blendConstants[1] = 0.0f;
+	colorBlendStateInfo.blendConstants[2] = 0.0f;
+	colorBlendStateInfo.blendConstants[3] = 0.0f;
+	
+	VkGraphicsPipelineCreateInfo graphicsPipelineCreateInfo = {0};
+	graphicsPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	graphicsPipelineCreateInfo.pNext = NULL;
+	graphicsPipelineCreateInfo.flags = 0;
+	graphicsPipelineCreateInfo.stageCount = sizeof(shaderStageCreateInfos) / sizeof(shaderStageCreateInfos[0]);
+	graphicsPipelineCreateInfo.pStages = shaderStageCreateInfos;
+	graphicsPipelineCreateInfo.pVertexInputState = &vertexInputStateCreateInfo;
+	graphicsPipelineCreateInfo.pInputAssemblyState = &inputAssemblyStateCreateInfo;
+	graphicsPipelineCreateInfo.pTessellationState = NULL;
+	graphicsPipelineCreateInfo.pViewportState = &viewportStateCreateInfo;
+	graphicsPipelineCreateInfo.pRasterizationState = &rasterizationStateCreateInfo;
+	graphicsPipelineCreateInfo.pMultisampleState = &multisampleStateCreateInfo;
+	graphicsPipelineCreateInfo.pDepthStencilState = &depthStencilStateCreateInfo;
+	graphicsPipelineCreateInfo.pColorBlendState = &colorBlendStateInfo;
+	graphicsPipelineCreateInfo.pDynamicState = NULL;
+	graphicsPipelineCreateInfo.layout = pipelineLayout;
+	graphicsPipelineCreateInfo.renderPass = renderPass;
+	graphicsPipelineCreateInfo.subpass = 0;
+	graphicsPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+	graphicsPipelineCreateInfo.basePipelineIndex = 0;
+
+	if(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &graphicsPipelineCreateInfo, pAllocator, pGraphicsPipeline) != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -645,83 +950,8 @@ static void TRM_Renderer_readShader(const char* pPath, uint32_t* pSize, uint32_t
 	fclose(pFile);
 }
 
-struct TRM_Renderer_ResourceInfoBuffer
-{
-	VkBuffer buffer;
-	VkDeviceMemory memory;
-};
-
-struct TRM_Renderer_ResourceInfoImage
-{
-	VkImage image;
-	VkImageLayout layout;
-	VkImageAspectFlags aspectFlags;
-};
-
-enum TRM_Renderer_ResourceType
-{
-	TRM_RENDERER_RESOURCE_TYPE_BUFFER,
-	TRM_RENDERER_RESOURCE_TYPE_IMAGE
-};
-
-struct TRM_Renderer_Resource
-{
-	enum TRM_Renderer_ResourceType type;
-	VkPipelineStageFlags stageFlags;
-	VkAccessFlags accessFlags;
-	union
-	{
-		struct TRM_Renderer_ResourceInfoBuffer buffer;
-		struct TRM_Renderer_ResourceInfoImage image;
-	} info;
-};
-
-enum TRM_Renderer_PassType
-{
-	TRM_RENDERER_PASS_TYPE_DISPATCH,
-	TRM_RENDERER_PASS_TYPE_IMAGE_COPY,
-	TRM_RENDERER_PASS_TYPE_PRESENT
-};
-
-struct TRM_Renderer_PassInfoDispatch
-{
-	uint32_t groupCountX;
-	uint32_t groupCountY;
-	uint32_t groupCountZ;
-	VkPipelineLayout pipelineLayout;
-	uint32_t descriptorSetCount;
-	VkDescriptorSet* pDescriptorSets;
-	VkPipeline pipeline;
-};
-
-struct TRM_Renderer_PassInfoImageCopy
-{
-	VkImageCopy imageCopy;
-};
-
-struct TRM_Renderer_ResourceAccess
-{
-	uint32_t resourceIndex;
-	VkPipelineStageFlags stageFlags;
-	VkAccessFlags accessFlags;
-	VkImageLayout layout;
-};
-
-struct TRM_Renderer_Pass
-{
-	enum TRM_Renderer_PassType type;
-	uint32_t inputCount;
-	uint32_t outputCount;
-	struct TRM_Renderer_ResourceAccess* pInputs;
-	struct TRM_Renderer_ResourceAccess* pOutputs;
-	union
-	{
-		struct TRM_Renderer_PassInfoDispatch dispatch;
-		struct TRM_Renderer_PassInfoImageCopy imageCopy;
-	} info;
-};
-
 // draw
+// draw indexed
 // draw indirect
 // refacto
 // samplers
@@ -912,7 +1142,6 @@ static void TRM_Renderer_fillCommandBuffer(
 			TRM_DynamicArray_destroy(&imageMemoryBarriers);
 		}
 
-		// ajout de la commande
 		if(pPasses[passIndex].type == TRM_RENDERER_PASS_TYPE_DISPATCH)
 		{
 			vkCmdBindDescriptorSets(
@@ -932,6 +1161,45 @@ static void TRM_Renderer_fillCommandBuffer(
 				pPasses[passIndex].info.dispatch.groupCountX, 
 				pPasses[passIndex].info.dispatch.groupCountY, 
 				pPasses[passIndex].info.dispatch.groupCountZ);
+		}
+		else if(pPasses[passIndex].type == TRM_RENDERER_PASS_TYPE_DRAW)
+		{
+			VkClearValue clearDepth = {0};
+			clearDepth.depthStencil.depth = 1.0f;
+			clearDepth.depthStencil.stencil = 0;
+
+			VkRenderPassBeginInfo renderPassBeginInfo = {0};
+			renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+			renderPassBeginInfo.pNext = NULL;
+			renderPassBeginInfo.renderPass = pPasses[passIndex].info.draw.renderPass;
+			renderPassBeginInfo.framebuffer = pPasses[passIndex].info.draw.framebuffer;
+			renderPassBeginInfo.renderArea.offset.x = 0;
+			renderPassBeginInfo.renderArea.offset.y = 0;
+			renderPassBeginInfo.renderArea.extent.width = pPasses[passIndex].info.draw.width;
+			renderPassBeginInfo.renderArea.extent.height = pPasses[passIndex].info.draw.height;
+			renderPassBeginInfo.clearValueCount = 1;
+			renderPassBeginInfo.pClearValues = &clearDepth;
+
+			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+			VkDeviceSize offset = 0;
+			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &pResources[pPasses[passIndex].pInputs[0].resourceIndex].info.buffer.buffer, &offset);
+
+			vkCmdBindDescriptorSets(
+				commandBuffer,
+				VK_PIPELINE_BIND_POINT_COMPUTE,
+				pPasses[passIndex].info.draw.pipelineLayout,
+				0,
+				pPasses[passIndex].info.draw.descriptorSetCount,
+				pPasses[passIndex].info.draw.pDescriptorSets,
+				0,
+				NULL);
+
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pPasses[passIndex].info.draw.pipeline);
+			
+			vkCmdDraw(commandBuffer, pPasses[passIndex].info.draw.vertexCount, 1, 0, 0);
+
+			vkCmdEndRenderPass(commandBuffer);
 		}
 		else if(pPasses[passIndex].type == TRM_RENDERER_PASS_TYPE_IMAGE_COPY)
 		{
@@ -1017,43 +1285,98 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		pState->queueFamilyIndex,
 		&pState->swapchain);
 
+	TRM_Arena_create(sizeof(struct TRM_Renderer_Resource), TRM_RENDERER_MAX_RESOURCE_COUNT, &pState->resources);
+
+	// === SWAPCHAIN IMAGE INFOS SETUP ===
+
 	VkImage* pSwapchainImages = NULL;
 	vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, NULL);
 	TRM_Memory_allocate(sizeof(VkImage) * pState->swapchainImageCount, (void**)&pSwapchainImages);
 	vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, pSwapchainImages);
 
-	TRM_Memory_allocate(sizeof(struct TRM_Renderer_SwapchainImage) * pState->swapchainImageCount, (void**)&pState->pSwapchainImages);
+	TRM_Memory_allocate(sizeof(struct TRM_Renderer_SwapchainImageInfo) * pState->swapchainImageCount, (void**)&pState->pSwapchainImageInfos);
 
 	for(uint32_t swapchainImageIndex = 0; swapchainImageIndex < pState->swapchainImageCount; ++swapchainImageIndex)
 	{
-		pState->pSwapchainImages[swapchainImageIndex].image = pSwapchainImages[swapchainImageIndex];
+		struct TRM_Renderer_Resource swapchainColorImage = {0};
+		swapchainColorImage.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+		swapchainColorImage.info.image.image = pSwapchainImages[swapchainImageIndex];
+		swapchainColorImage.stageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		swapchainColorImage.accessFlags = VK_ACCESS_NONE;
+		
+		TRM_Renderer_createImageView(
+			pState->pAllocator,
+			pState->device,
+			pSwapchainImages[swapchainImageIndex],
+			swapchainFormat,
+			&swapchainColorImage.info.image.imageView);
+
+		swapchainColorImage.info.image.memory = VK_NULL_HANDLE;
+		swapchainColorImage.info.image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		swapchainColorImage.info.image.aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+		swapchainColorImage.info.image.swapchainImage = true;
+
+		pState->pSwapchainImageInfos[swapchainImageIndex].colorImageIndex;
+
+		TRM_Arena_add(
+			(void*)&swapchainColorImage, 
+			&pState->resources, 
+			&pState->pSwapchainImageInfos[swapchainImageIndex].colorImageIndex);
+
+		struct TRM_Renderer_Resource swapchainDepthImage = {0};
+		swapchainDepthImage.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+		swapchainDepthImage.stageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		swapchainDepthImage.accessFlags = VK_ACCESS_NONE;
+
+		TRM_Renderer_createImage(
+			pState->pAllocator, 
+			pState->device,
+			windowWidth,
+			windowHeight,
+			VK_FORMAT_D32_SFLOAT,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+			pState->queueFamilyIndex,
+			&swapchainDepthImage.info.image.image);
+
+		TRM_Renderer_allocateMemoryForImage(
+			pState->pAllocator,
+			pState->physicalDevice,
+			pState->device,
+			swapchainDepthImage.info.image.image,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&swapchainDepthImage.info.image.memory);
+
+		vkBindImageMemory(
+			pState->device, 
+			swapchainDepthImage.info.image.image, 
+			swapchainDepthImage.info.image.memory, 0);
 
 		TRM_Renderer_createImageView(
 			pState->pAllocator,
 			pState->device,
-			pState->pSwapchainImages[swapchainImageIndex].image,
+			pSwapchainImages[swapchainImageIndex],
 			swapchainFormat,
-			&pState->pSwapchainImages[swapchainImageIndex].imageView);
+			&swapchainDepthImage.info.image.imageView);
 
-		TRM_Renderer_createSemaphore(pState->pAllocator, pState->device, &pState->pSwapchainImages[swapchainImageIndex].imageRenderedSemaphore);
-		pState->pSwapchainImages[swapchainImageIndex].transitionned = VK_FALSE;
+		swapchainDepthImage.info.image.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+		swapchainDepthImage.info.image.aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT;
+		swapchainDepthImage.info.image.swapchainImage = false;
+
+		TRM_Arena_add(
+			(void*)&swapchainDepthImage, 
+			&pState->resources, 
+			&pState->pSwapchainImageInfos[swapchainImageIndex].depthImageIndex);
+
+		TRM_Renderer_createSemaphore(
+			pState->pAllocator, 
+			pState->device, 
+			&pState->pSwapchainImageInfos[swapchainImageIndex].imageRenderedSemaphore);
 	}
 
 	TRM_Memory_deallocate(pSwapchainImages);
 
-	TRM_Memory_allocate(sizeof(struct TRM_Renderer_FrameInFlight) * pState->swapchainImageCount, (void**)&pState->pFramesInFlight);
-
-	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
-	{
-		TRM_Renderer_allocateCommandBuffer(pState->commandPool, pState->device, &pState->pFramesInFlight[frameInFlightIndex].commandBuffer);
-		TRM_Renderer_createFence(pState->pAllocator, pState->device, &pState->pFramesInFlight[frameInFlightIndex].commandBufferExecutedFence);
-		TRM_Renderer_createSemaphore(pState->pAllocator, pState->device, &pState->pFramesInFlight[frameInFlightIndex].imageAvailableSemaphore);
-		pState->pFramesInFlight[frameInFlightIndex].imageIndex = UINT32_MAX;
-	}
-
-	pState->frameIndex = 0;
-
-	// === temporary ===
+	// === FRAME INFOS SETUP ====
 
 	VkDescriptorSetLayoutBinding bindings[2];
 	bindings[0].binding = 0;
@@ -1067,43 +1390,58 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	bindings[1].descriptorCount = 1;
 	bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	bindings[1].pImmutableSamplers = NULL;
-	
+
 	TRM_Renderer_createDescriptorSetLayout(pState->pAllocator, pState->device, sizeof(bindings) / sizeof(bindings[0]), bindings, &pState->descriptorSetLayout);
 
-	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
+	TRM_Memory_allocate(sizeof(struct TRM_Renderer_FrameInfo) * TRM_RENDERER_FRAME_COUNT, (void**)&pState->pFrameInfos);
+
+	for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_FRAME_COUNT; ++frameIndex)
 	{
-		TRM_Renderer_allocateDescriptorSet(pState->device, pState->descriptorPool, pState->descriptorSetLayout, &pState->pFramesInFlight[frameInFlightIndex].descriptorSet);
-		
+		TRM_Renderer_allocateCommandBuffer(pState->commandPool, pState->device, &pState->pFrameInfos[frameIndex].commandBuffer);
+		TRM_Renderer_createFence(pState->pAllocator, pState->device, &pState->pFrameInfos[frameIndex].commandBufferExecutedFence);
+		TRM_Renderer_createSemaphore(pState->pAllocator, pState->device, &pState->pFrameInfos[frameIndex].imageAvailableSemaphore);
+		TRM_Renderer_allocateDescriptorSet(pState->device, pState->descriptorPool, pState->descriptorSetLayout, &pState->pFrameInfos[frameIndex].descriptorSet);
+
+		struct TRM_Renderer_Resource uniformBuffer = {0};
+
+		uniformBuffer.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
+		uniformBuffer.accessFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		uniformBuffer.stageFlags = VK_ACCESS_NONE;
+
 		TRM_Renderer_createBuffer(
-			pState->pAllocator, 
-			pState->device, 
-			sizeof(float) * 4, 
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
-			pState->queueFamilyIndex, 
-			&pState->pFramesInFlight[frameInFlightIndex].uniformBuffer);
-		
+			pState->pAllocator,
+			pState->device,
+			sizeof(float) * 4,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			pState->queueFamilyIndex,
+			&uniformBuffer.info.buffer.buffer);
+
 		TRM_Renderer_allocateMemoryForBuffer(
-			pState->pAllocator, 
-			pState->physicalDevice, 
-			pState->device, 
-			pState->pFramesInFlight[frameInFlightIndex].uniformBuffer, 
+			pState->pAllocator,
+			pState->physicalDevice,
+			pState->device,
+			uniformBuffer.info.buffer.buffer,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&pState->pFramesInFlight[frameInFlightIndex].uniformBufferMemory);
+			&uniformBuffer.info.buffer.memory);
 
 		if(vkBindBufferMemory(
-			pState->device, 
-			pState->pFramesInFlight[frameInFlightIndex].uniformBuffer, 
-			pState->pFramesInFlight[frameInFlightIndex].uniformBufferMemory, 
+			pState->device,
+			uniformBuffer.info.buffer.buffer,
+			uniformBuffer.info.buffer.memory,
 			0) != VK_SUCCESS)
 		{
 			exit(EXIT_FAILURE);
 		}
+
+		TRM_Arena_add(&uniformBuffer, &pState->resources, &pState->pFrameInfos[frameIndex].uniformBufferIndex);
 	}
+
+	pState->frameIndex = 0;
 	
 	VkShaderModule computeShaderModule;
 	uint32_t codeSize = 0;
 	uint32_t* pCode = NULL;
-	TRM_Renderer_readShader("../../../assets/shaders/compute.spv", &codeSize, &pCode); // very bad
+	TRM_Renderer_readShader(PROJECT_ROOT "/assets/shaders/compute.spv", &codeSize, &pCode);
 	TRM_Renderer_createShaderModule(pState->pAllocator, pState->device, codeSize, pCode, &computeShaderModule);
 	
 	TRM_Renderer_createPipelineLayout(pState->pAllocator, pState->device, 1, &pState->descriptorSetLayout, &pState->computePipelineLayout);
@@ -1111,29 +1449,6 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	
 	vkDestroyShaderModule(pState->device, computeShaderModule, pState->pAllocator);
 	TRM_Memory_deallocate(pCode);
-
-	// push resources
-	TRM_DynamicArray_create(sizeof(struct TRM_Renderer_Resource), &pState->resources);
-
-	for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
-	{
-		struct TRM_Renderer_Resource image = {0};
-		image.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
-		image.stageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		image.accessFlags = VK_ACCESS_NONE;
-		image.info.image.image = pState->pSwapchainImages[frameInFlightIndex].image;
-		image.info.image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-		image.info.image.aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
-
-		struct TRM_Renderer_Resource uniformBuffer = {0};
-		uniformBuffer.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
-		uniformBuffer.stageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		uniformBuffer.accessFlags = VK_ACCESS_NONE;
-		uniformBuffer.info.buffer.buffer = pState->pFramesInFlight[frameInFlightIndex].uniformBuffer;
-
-		TRM_DynamicArray_push(&image, &pState->resources);
-		TRM_DynamicArray_push(&uniformBuffer, &pState->resources);
-	}
 }
 
 void TRM_Renderer_terminate(void)
@@ -1145,30 +1460,45 @@ void TRM_Renderer_terminate(void)
 			exit(EXIT_FAILURE);
 		}
 
-		TRM_DynamicArray_destroy(&pState->resources);
+		for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_FRAME_COUNT; ++frameIndex)
+		{
+			struct TRM_Renderer_Resource* pUniformBuffer;
+			TRM_Arena_get(pState->pFrameInfos[frameIndex].uniformBufferIndex, pState->resources, (void**)&pUniformBuffer);
+
+			vkDestroyBuffer(pState->device, pUniformBuffer->info.buffer.buffer, pState->pAllocator);
+			vkFreeMemory(pState->device, pUniformBuffer->info.buffer.memory, pState->pAllocator);
+
+			vkDestroySemaphore(pState->device, pState->pFrameInfos[frameIndex].imageAvailableSemaphore, pState->pAllocator);
+			vkDestroyFence(pState->device, pState->pFrameInfos[frameIndex].commandBufferExecutedFence, pState->pAllocator);
+		}
 
 		vkDestroyPipeline(pState->device, pState->computePipeline, pState->pAllocator);
 		vkDestroyPipelineLayout(pState->device, pState->computePipelineLayout, pState->pAllocator);
-
-		for(uint32_t frameInFlightIndex = 0; frameInFlightIndex < pState->swapchainImageCount; ++frameInFlightIndex)
-		{
-			vkFreeMemory(pState->device, pState->pFramesInFlight[frameInFlightIndex].uniformBufferMemory, pState->pAllocator);
-			vkDestroyBuffer(pState->device, pState->pFramesInFlight[frameInFlightIndex].uniformBuffer, pState->pAllocator);
-			vkDestroySemaphore(pState->device, pState->pFramesInFlight[frameInFlightIndex].imageAvailableSemaphore, pState->pAllocator);
-			vkDestroyFence(pState->device, pState->pFramesInFlight[frameInFlightIndex].commandBufferExecutedFence, pState->pAllocator);
-		}
-
 		vkDestroyDescriptorSetLayout(pState->device, pState->descriptorSetLayout, pState->pAllocator);
 		
-		TRM_Memory_deallocate(pState->pFramesInFlight);
+		TRM_Memory_deallocate(pState->pFrameInfos);
 
 		for(uint32_t swapchainImageIndex = 0; swapchainImageIndex < pState->swapchainImageCount; ++swapchainImageIndex)
 		{
-			vkDestroySemaphore(pState->device, pState->pSwapchainImages[swapchainImageIndex].imageRenderedSemaphore, pState->pAllocator);
-			vkDestroyImageView(pState->device, pState->pSwapchainImages[swapchainImageIndex].imageView, pState->pAllocator);
+			struct TRM_Renderer_Resource* pSwapchainColorImage;
+			TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageIndex].colorImageIndex, pState->resources, (void**)&pSwapchainColorImage);
+
+			vkDestroyImageView(pState->device, pSwapchainColorImage->info.image.imageView, pState->pAllocator);
+			vkFreeMemory(pState->device, pSwapchainColorImage->info.image.memory, pState->pAllocator);
+
+			struct TRM_Renderer_Resource* pSwapchainDepthImage;
+			TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageIndex].depthImageIndex, pState->resources, (void**)&pSwapchainDepthImage);
+
+			vkDestroyImage(pState->device, pSwapchainDepthImage->info.image.image, pState->pAllocator);
+			vkDestroyImageView(pState->device, pSwapchainDepthImage->info.image.imageView, pState->pAllocator);
+			vkFreeMemory(pState->device, pSwapchainDepthImage->info.image.memory, pState->pAllocator);
+
+			vkDestroySemaphore(pState->device, pState->pSwapchainImageInfos[swapchainImageIndex].imageRenderedSemaphore, pState->pAllocator);
 		}
 
-		TRM_Memory_deallocate(pState->pSwapchainImages);
+		TRM_Memory_deallocate(pState->pSwapchainImageInfos);
+		
+		TRM_Arena_destroy(&pState->resources);
 		
 		vkDestroySwapchainKHR(pState->device, pState->swapchain, pState->pAllocator);
 		vkDestroyDescriptorPool(pState->device, pState->descriptorPool, pState->pAllocator);
@@ -1182,34 +1512,20 @@ void TRM_Renderer_terminate(void)
 	}
 }
 
-void TRM_Renderer_render()
+void TRM_Renderer_render(void)
 {
-	if(vkWaitForFences(pState->device, 1, &pState->pFramesInFlight[pState->frameIndex].commandBufferExecutedFence, VK_FALSE, UINT64_MAX) != VK_SUCCESS)
+	if(vkWaitForFences(pState->device, 1, &pState->pFrameInfos[pState->frameIndex].commandBufferExecutedFence, VK_FALSE, UINT64_MAX) != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
 	}
 
-	if(vkResetFences(pState->device, 1, &pState->pFramesInFlight[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
+	if(vkResetFences(pState->device, 1, &pState->pFrameInfos[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
 	}
 
-	if(pState->pFramesInFlight[pState->frameIndex].imageIndex != UINT32_MAX)
-	{
-		pState->pSwapchainImages[pState->pFramesInFlight[pState->frameIndex].imageIndex].transitionned = VK_TRUE;
-	}
-
-	uint32_t imageIndex = 0;
-	if(vkAcquireNextImageKHR(
-		pState->device, 
-		pState->swapchain, 
-		UINT64_MAX, 
-		pState->pFramesInFlight[pState->frameIndex].imageAvailableSemaphore, 
-		VK_NULL_HANDLE, 
-		&imageIndex) != VK_SUCCESS)
-	{
-		exit(EXIT_FAILURE);
-	}
+	struct TRM_Renderer_Resource* pUniformBuffer;
+	TRM_Arena_get(pState->pFrameInfos[pState->frameIndex].uniformBufferIndex, pState->resources, (void**)&pUniformBuffer);
 
 	{
 		static float toy = 0.0f;
@@ -1217,27 +1533,43 @@ void TRM_Renderer_render()
 		toy += 0.01f;
 
 		void* pData = NULL;
-		vkMapMemory(pState->device, pState->pFramesInFlight[pState->frameIndex].uniformBufferMemory, 0, sizeof(color), 0, &pData);
+		vkMapMemory(pState->device, pUniformBuffer->info.buffer.memory, 0, sizeof(color), 0, &pData);
 		TRM_Memory_memcpy(sizeof(color), color, pData);
-		vkUnmapMemory(pState->device, pState->pFramesInFlight[pState->frameIndex].uniformBufferMemory);
+		vkUnmapMemory(pState->device, pUniformBuffer->info.buffer.memory);
 	}
 
-	pState->pFramesInFlight[pState->frameIndex].imageIndex = imageIndex;
+	uint32_t imageIndex = 0;
+	if(vkAcquireNextImageKHR(
+		pState->device,
+		pState->swapchain,
+		UINT64_MAX,
+		pState->pFrameInfos[pState->frameIndex].imageAvailableSemaphore,
+		VK_NULL_HANDLE,
+		&imageIndex) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+
+
+	struct TRM_Renderer_Resource* pSwapchainColorImage;
+	TRM_Arena_get(pState->pSwapchainImageInfos[imageIndex].colorImageIndex, pState->resources, (void**)&pSwapchainColorImage);
+
+	pState->pFrameInfos[pState->frameIndex].imageIndex = pState->pSwapchainImageInfos[imageIndex].colorImageIndex;
 
 	VkDescriptorImageInfo imageInfo = {0};
 	imageInfo.sampler = VK_NULL_HANDLE;
-	imageInfo.imageView = pState->pSwapchainImages[imageIndex].imageView;
+	imageInfo.imageView = pSwapchainColorImage->info.image.imageView;
 	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	VkDescriptorBufferInfo bufferInfo = {0};
-	bufferInfo.buffer = pState->pFramesInFlight[pState->frameIndex].uniformBuffer;
+	bufferInfo.buffer = pUniformBuffer->info.buffer.buffer;
 	bufferInfo.offset = 0;
 	bufferInfo.range = VK_WHOLE_SIZE;
 
 	VkWriteDescriptorSet descriptorWrites[2];
 	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[0].pNext = NULL;
-	descriptorWrites[0].dstSet = pState->pFramesInFlight[pState->frameIndex].descriptorSet;
+	descriptorWrites[0].dstSet = pState->pFrameInfos[pState->frameIndex].descriptorSet;
 	descriptorWrites[0].dstBinding = 0;
 	descriptorWrites[0].dstArrayElement = 0;
 	descriptorWrites[0].descriptorCount = 1;
@@ -1248,7 +1580,7 @@ void TRM_Renderer_render()
 
 	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[1].pNext = NULL;
-	descriptorWrites[1].dstSet = pState->pFramesInFlight[pState->frameIndex].descriptorSet;
+	descriptorWrites[1].dstSet = pState->pFrameInfos[pState->frameIndex].descriptorSet;
 	descriptorWrites[1].dstBinding = 1;
 	descriptorWrites[1].dstArrayElement = 0;
 	descriptorWrites[1].descriptorCount = 1;
@@ -1260,12 +1592,12 @@ void TRM_Renderer_render()
 	vkUpdateDescriptorSets(pState->device, sizeof(descriptorWrites) / sizeof(descriptorWrites[0]), descriptorWrites, 0, NULL);
 
 	struct TRM_Renderer_ResourceAccess inputs[1];
-	inputs[0].resourceIndex = imageIndex * 2 + 1;
+	inputs[0].resourceIndex = pState->pFrameInfos[pState->frameIndex].uniformBufferIndex;
 	inputs[0].accessFlags = VK_ACCESS_SHADER_READ_BIT;
 	inputs[0].stageFlags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
 	struct TRM_Renderer_ResourceAccess outputs[1];
-	outputs[0].resourceIndex = imageIndex * 2;
+	outputs[0].resourceIndex = pState->pFrameInfos[pState->frameIndex].imageIndex;
 	outputs[0].accessFlags = VK_ACCESS_SHADER_WRITE_BIT;
 	outputs[0].stageFlags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	outputs[0].layout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1280,12 +1612,12 @@ void TRM_Renderer_render()
 	passes[0].info.dispatch.groupCountY = (500 + (8 - 1)) / 8;
 	passes[0].info.dispatch.groupCountZ = 1;
 	passes[0].info.dispatch.descriptorSetCount = 1;
-	passes[0].info.dispatch.pDescriptorSets = &pState->pFramesInFlight[pState->frameIndex].descriptorSet;
+	passes[0].info.dispatch.pDescriptorSets = &pState->pFrameInfos[pState->frameIndex].descriptorSet;
 	passes[0].info.dispatch.pipelineLayout = pState->computePipelineLayout;
 	passes[0].info.dispatch.pipeline = pState->computePipeline;
 
 	struct TRM_Renderer_ResourceAccess present;
-	present.resourceIndex = imageIndex * 2;
+	present.resourceIndex = pState->pFrameInfos[pState->frameIndex].imageIndex;
 	present.accessFlags = VK_ACCESS_NONE;
 	present.stageFlags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 	present.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -1300,7 +1632,7 @@ void TRM_Renderer_render()
 		(struct TRM_Renderer_Resource*)pState->resources.pData, 
 		sizeof(passes) / sizeof(passes[0]), 
 		passes, 
-		pState->pFramesInFlight[pState->frameIndex].commandBuffer);
+		pState->pFrameInfos[pState->frameIndex].commandBuffer);
 
 	VkPipelineStageFlags waitDstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
@@ -1308,14 +1640,14 @@ void TRM_Renderer_render()
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfo.pNext = NULL;
 	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = &pState->pFramesInFlight[pState->frameIndex].imageAvailableSemaphore;
+	submitInfo.pWaitSemaphores = &pState->pFrameInfos[pState->frameIndex].imageAvailableSemaphore;
 	submitInfo.pWaitDstStageMask = &waitDstStageMask;
 	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &pState->pFramesInFlight[pState->frameIndex].commandBuffer;
+	submitInfo.pCommandBuffers = &pState->pFrameInfos[pState->frameIndex].commandBuffer;
 	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = &pState->pSwapchainImages[imageIndex].imageRenderedSemaphore;
+	submitInfo.pSignalSemaphores = &pState->pSwapchainImageInfos[imageIndex].imageRenderedSemaphore;
 
-	if(vkQueueSubmit(pState->queue, 1, &submitInfo, pState->pFramesInFlight[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
+	if(vkQueueSubmit(pState->queue, 1, &submitInfo, pState->pFrameInfos[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -1324,7 +1656,7 @@ void TRM_Renderer_render()
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	presentInfo.pNext = NULL;
 	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = &pState->pSwapchainImages[imageIndex].imageRenderedSemaphore;
+	presentInfo.pWaitSemaphores = &pState->pSwapchainImageInfos[imageIndex].imageRenderedSemaphore;
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = &pState->swapchain;
 	presentInfo.pImageIndices = &imageIndex;
@@ -1335,5 +1667,5 @@ void TRM_Renderer_render()
 		exit(EXIT_FAILURE);
 	}
 
-	pState->frameIndex = (pState->frameIndex + 1) % pState->swapchainImageCount;
+	pState->frameIndex = (pState->frameIndex + 1) % TRM_RENDERER_FRAME_COUNT;
 }

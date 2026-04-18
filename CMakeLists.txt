@@ -56,6 +56,7 @@ else()
 endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE VK_NO_PROTOTYPES)
+target_compile_definitions(${PROJECT_NAME} PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
 add_subdirectory(external/glfw)
 
