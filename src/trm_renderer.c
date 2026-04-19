@@ -687,6 +687,7 @@ static void TRM_Renderer_createShaderModule(
 	}
 }
 
+/*
 static void TRM_Renderer_createComputePipeline(
 	const VkAllocationCallbacks* pAllocator, 
 	VkDevice device, 
@@ -717,6 +718,7 @@ static void TRM_Renderer_createComputePipeline(
 		exit(EXIT_FAILURE);
 	}
 }
+*/
 
 static void TRM_Renderer_createRenderPass(
 	const VkAllocationCallbacks* pAllocator,
