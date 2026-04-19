@@ -1,6 +1,7 @@
 #include "trm_renderer.h"
 #include "trm_memory.h"
 #include "trm_containers.h"
+#include "trm_maths.h"
 
 #define VOLK_IMPLEMENTATION
 #include "volk.h"
@@ -78,6 +79,8 @@ struct TRM_Renderer_PassInfoDraw
 	uint32_t descriptorSetCount;
 	VkDescriptorSet* pDescriptorSets;
 	VkPipeline pipeline;
+	uint32_t attachmentCount;
+	VkClearValue* pClearValues;
 };
 
 struct TRM_Renderer_PassInfoImageCopy
@@ -1249,15 +1252,6 @@ static void TRM_Renderer_fillCommandBuffer(
 		}
 		else if(pPasses[passIndex].type == TRM_RENDERER_PASS_TYPE_DRAW)
 		{
-			VkClearValue clears[2];
-			clears[0].color.float32[0] = 1.0f;
-			clears[0].color.float32[1] = 0.0f;
-			clears[0].color.float32[2] = 0.0f;
-			clears[0].color.float32[3] = 1.0f;
-
-			clears[1].depthStencil.depth = 1.0f;
-			clears[1].depthStencil.stencil = 0;
-
 			VkRenderPassBeginInfo renderPassBeginInfo = {0};
 			renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 			renderPassBeginInfo.pNext = NULL;
@@ -1267,8 +1261,8 @@ static void TRM_Renderer_fillCommandBuffer(
 			renderPassBeginInfo.renderArea.offset.y = 0;
 			renderPassBeginInfo.renderArea.extent.width = pPasses[passIndex].info.draw.width;
 			renderPassBeginInfo.renderArea.extent.height = pPasses[passIndex].info.draw.height;
-			renderPassBeginInfo.clearValueCount = sizeof(clears) / sizeof(clears[0]);
-			renderPassBeginInfo.pClearValues = clears;
+			renderPassBeginInfo.clearValueCount = pPasses[passIndex].info.draw.attachmentCount;
+			renderPassBeginInfo.pClearValues = pPasses[passIndex].info.draw.pClearValues;
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -1429,8 +1423,8 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		TRM_Renderer_createImage(
 			pState->pAllocator, 
 			pState->device,
-			windowWidth,
-			windowHeight,
+			pState->swapchainWidth,
+			pState->swapchainHeight,
 			VK_FORMAT_D32_SFLOAT,
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1543,8 +1537,8 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 			pState->renderPass, 
 			sizeof(attachments) / sizeof(attachments[0]), 
 			attachments, 
-			windowWidth, 
-			windowHeight, 
+			pState->swapchainWidth, 
+			pState->swapchainHeight, 
 			&pState->pSwapchainImageInfos[swapchainImageInfoIndex].framebuffer);
 	}
 
@@ -1809,7 +1803,6 @@ void TRM_Renderer_render(void)
 		exit(EXIT_FAILURE);
 	}
 
-
 	struct TRM_Renderer_Resource* pSwapchainColorImage;
 	TRM_Arena_get(pState->pSwapchainImageInfos[imageIndex].colorImageIndex, pState->resources, (void**)&pSwapchainColorImage);
 
@@ -1852,6 +1845,15 @@ void TRM_Renderer_render(void)
 	outputs[1].stageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 	outputs[1].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+	VkClearValue clears[2];
+	clears[0].color.float32[0] = 1.0f;
+	clears[0].color.float32[1] = 0.0f;
+	clears[0].color.float32[2] = 0.0f;
+	clears[0].color.float32[3] = 1.0f;
+
+	clears[1].depthStencil.depth = 1.0f;
+	clears[1].depthStencil.stencil = 0;
+
 	struct TRM_Renderer_Pass passes[2];
 	passes[0].type = TRM_RENDERER_PASS_TYPE_DRAW;
 	passes[0].inputCount = sizeof(inputs) / sizeof(inputs[0]);
@@ -1867,6 +1869,8 @@ void TRM_Renderer_render(void)
 	passes[0].info.draw.descriptorSetCount = 1;
 	passes[0].info.draw.pDescriptorSets = &pState->pFrameInfos[pState->frameIndex].descriptorSet;
 	passes[0].info.draw.pipeline = pState->graphicsPipeline;
+	passes[0].info.draw.attachmentCount = 2;
+	passes[0].info.draw.pClearValues = clears;
 
 	struct TRM_Renderer_ResourceAccess present;
 	present.resourceIndex = pState->pSwapchainImageInfos[imageIndex].colorImageIndex;
