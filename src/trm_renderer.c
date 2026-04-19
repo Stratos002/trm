@@ -114,8 +114,8 @@ struct TRM_Renderer_FrameInfo
 	VkFence commandBufferExecutedFence;
 	VkSemaphore imageAvailableSemaphore;
 	VkDescriptorSet descriptorSet;
+	uint32_t vertexBufferIndex;
 	uint32_t uniformBufferIndex;
-	uint32_t imageIndex;
 };
 
 struct TRM_Renderer_SwapchainImageInfo
@@ -123,6 +123,7 @@ struct TRM_Renderer_SwapchainImageInfo
 	VkSemaphore imageRenderedSemaphore;
 	uint32_t colorImageIndex;
 	uint32_t depthImageIndex;
+	VkFramebuffer framebuffer;
 };
 
 struct TRM_Renderer_State
@@ -143,8 +144,9 @@ struct TRM_Renderer_State
 	uint32_t frameIndex;
 	struct TRM_Arena resources;
 	VkDescriptorSetLayout descriptorSetLayout;
-	VkPipeline computePipeline;
-	VkPipelineLayout computePipelineLayout;
+	VkRenderPass renderPass;
+	VkPipeline graphicsPipeline;
+	VkPipelineLayout graphicsPipelineLayout;
 };
 
 static struct TRM_Renderer_State* pState = NULL;
@@ -485,6 +487,7 @@ static void TRM_Renderer_createImageView(
 	VkDevice device,
 	VkImage image,
 	VkFormat format,
+	VkImageAspectFlags imageAspect,
 	VkImageView* pImageView)
 {
 	VkImageViewCreateInfo imageViewCreateInfo = {0};
@@ -498,7 +501,7 @@ static void TRM_Renderer_createImageView(
 	imageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
 	imageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
 	imageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-	imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	imageViewCreateInfo.subresourceRange.aspectMask = imageAspect;
 	imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
 	imageViewCreateInfo.subresourceRange.levelCount = 1;
 	imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
@@ -715,7 +718,6 @@ static void TRM_Renderer_createComputePipeline(
 	}
 }
 
-/*
 static void TRM_Renderer_createRenderPass(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device, 
@@ -723,13 +725,13 @@ static void TRM_Renderer_createRenderPass(
 {
 	VkAttachmentDescription attachmentDescriptions[2];
 	attachmentDescriptions[0].flags = 0;
-	attachmentDescriptions[0].format = VK_FORMAT_R8G8B8_SRGB;
+	attachmentDescriptions[0].format = VK_FORMAT_R8G8B8A8_UNORM;
 	attachmentDescriptions[0].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachmentDescriptions[0].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachmentDescriptions[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachmentDescriptions[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachmentDescriptions[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachmentDescriptions[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachmentDescriptions[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachmentDescriptions[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	attachmentDescriptions[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
 	attachmentDescriptions[1].flags = 0;
@@ -739,8 +741,8 @@ static void TRM_Renderer_createRenderPass(
 	attachmentDescriptions[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachmentDescriptions[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachmentDescriptions[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachmentDescriptions[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachmentDescriptions[1].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	attachmentDescriptions[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachmentDescriptions[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	VkAttachmentReference colorAttachmentReference = {0};
 	colorAttachmentReference.attachment = 0;
@@ -748,7 +750,7 @@ static void TRM_Renderer_createRenderPass(
 
 	VkAttachmentReference depthAttachmentReference = {0};
 	depthAttachmentReference.attachment = 1;
-	depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+	depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	VkSubpassDescription subpassDescription = {0};
 	subpassDescription.flags = 0;
@@ -778,9 +780,34 @@ static void TRM_Renderer_createRenderPass(
 		exit(EXIT_FAILURE);
 	}
 }
-*/
 
-/*
+static void TRM_Renderer_createFramebuffer(
+	const VkAllocationCallbacks* pAllocator,
+	VkDevice device,
+	VkRenderPass renderPass,
+	uint32_t attachmentCount,
+	VkImageView* pAttachments,
+	uint32_t width,
+	uint32_t height,
+	VkFramebuffer* pFramebuffer)
+{
+	VkFramebufferCreateInfo framebufferCreateInfo = {0};
+	framebufferCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+	framebufferCreateInfo.pNext = NULL;
+	framebufferCreateInfo.flags = 0;
+	framebufferCreateInfo.renderPass = renderPass;
+	framebufferCreateInfo.attachmentCount = attachmentCount;
+	framebufferCreateInfo.pAttachments = pAttachments;
+	framebufferCreateInfo.width = width;
+	framebufferCreateInfo.height = height;
+	framebufferCreateInfo.layers = 1;
+
+	if(vkCreateFramebuffer(device, &framebufferCreateInfo, pAllocator, pFramebuffer) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
 static void TRM_Renderer_createGraphicsPipeline(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device,
@@ -931,7 +958,6 @@ static void TRM_Renderer_createGraphicsPipeline(
 		exit(EXIT_FAILURE);
 	}
 }
-*/
 
 // todo : move this
 static void TRM_Renderer_readShader(const char* pPath, uint32_t* pSize, uint32_t** ppCode)
@@ -954,14 +980,13 @@ static void TRM_Renderer_readShader(const char* pPath, uint32_t* pSize, uint32_t
 	fclose(pFile);
 }
 
-// draw
+// refacto
 // draw indexed
 // draw indirect
-// refacto
 // samplers
+// refine API design
 // validation
 // reordering
-// aliasing
 
 static void TRM_Renderer_fillCommandBuffer(
 	struct TRM_Renderer_Resource* pResources, 
@@ -1168,9 +1193,14 @@ static void TRM_Renderer_fillCommandBuffer(
 		}
 		else if(pPasses[passIndex].type == TRM_RENDERER_PASS_TYPE_DRAW)
 		{
-			VkClearValue clearDepth = {0};
-			clearDepth.depthStencil.depth = 1.0f;
-			clearDepth.depthStencil.stencil = 0;
+			VkClearValue clears[2];
+			clears[0].color.float32[0] = 1.0f;
+			clears[0].color.float32[1] = 0.0f;
+			clears[0].color.float32[2] = 0.0f;
+			clears[0].color.float32[3] = 1.0f;
+
+			clears[1].depthStencil.depth = 1.0f;
+			clears[1].depthStencil.stencil = 0;
 
 			VkRenderPassBeginInfo renderPassBeginInfo = {0};
 			renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1181,17 +1211,29 @@ static void TRM_Renderer_fillCommandBuffer(
 			renderPassBeginInfo.renderArea.offset.y = 0;
 			renderPassBeginInfo.renderArea.extent.width = pPasses[passIndex].info.draw.width;
 			renderPassBeginInfo.renderArea.extent.height = pPasses[passIndex].info.draw.height;
-			renderPassBeginInfo.clearValueCount = 1;
-			renderPassBeginInfo.pClearValues = &clearDepth;
+			renderPassBeginInfo.clearValueCount = sizeof(clears) / sizeof(clears[0]);
+			renderPassBeginInfo.pClearValues = clears;
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+			VkViewport viewport = {0};
+			viewport.x = 0.0f;
+			viewport.y = -1.0f;
+			viewport.width = 500;
+			viewport.height = 500;
+			viewport.minDepth = 0.0f;
+			viewport.maxDepth = 1.0f;
+
+			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
 			VkDeviceSize offset = 0;
 			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &pResources[pPasses[passIndex].pInputs[0].resourceIndex].info.buffer.buffer, &offset);
 
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pPasses[passIndex].info.draw.pipeline);
+			
 			vkCmdBindDescriptorSets(
 				commandBuffer,
-				VK_PIPELINE_BIND_POINT_COMPUTE,
+				VK_PIPELINE_BIND_POINT_GRAPHICS,
 				pPasses[passIndex].info.draw.pipelineLayout,
 				0,
 				pPasses[passIndex].info.draw.descriptorSetCount,
@@ -1199,8 +1241,6 @@ static void TRM_Renderer_fillCommandBuffer(
 				0,
 				NULL);
 
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pPasses[passIndex].info.draw.pipeline);
-			
 			vkCmdDraw(commandBuffer, pPasses[passIndex].info.draw.vertexCount, 1, 0, 0);
 
 			vkCmdEndRenderPass(commandBuffer);
@@ -1249,6 +1289,13 @@ static void TRM_Renderer_fillCommandBuffer(
 		exit(EXIT_FAILURE);
 	}
 }
+
+struct Vertex
+{
+	float x;
+	float y;
+	float z;
+};
 
 void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t windowHeight)
 {
@@ -1313,6 +1360,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 			pState->device,
 			pSwapchainImages[swapchainImageIndex],
 			swapchainFormat,
+			VK_IMAGE_ASPECT_COLOR_BIT,
 			&swapchainColorImage.info.image.imageView);
 
 		swapchainColorImage.info.image.memory = VK_NULL_HANDLE;
@@ -1357,11 +1405,12 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		TRM_Renderer_createImageView(
 			pState->pAllocator,
 			pState->device,
-			pSwapchainImages[swapchainImageIndex],
-			swapchainFormat,
+			swapchainDepthImage.info.image.image,
+			VK_FORMAT_D32_SFLOAT,
+			VK_IMAGE_ASPECT_DEPTH_BIT,
 			&swapchainDepthImage.info.image.imageView);
 
-		swapchainDepthImage.info.image.layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+		swapchainDepthImage.info.image.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		swapchainDepthImage.info.image.aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT;
 		swapchainDepthImage.info.image.swapchainImage = false;
 
@@ -1378,20 +1427,40 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 
 	TRM_Memory_deallocate(pSwapchainImages);
 
+	TRM_Renderer_createRenderPass(pState->pAllocator, pState->device, &pState->renderPass);
+
+	for(uint32_t swapchainImageInfoIndex = 0; swapchainImageInfoIndex < pState->swapchainImageCount; ++swapchainImageInfoIndex)
+	{
+		struct TRM_Renderer_Resource* pColorImage = NULL;
+		TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageInfoIndex].colorImageIndex, pState->resources, (void**)&pColorImage);
+
+		struct TRM_Renderer_Resource* pDepthImage = NULL;
+		TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageInfoIndex].depthImageIndex, pState->resources, (void**)&pDepthImage);
+
+		VkImageView attachments[] = {
+			pColorImage->info.image.imageView,
+			pDepthImage->info.image.imageView
+		};
+
+		TRM_Renderer_createFramebuffer(
+			pState->pAllocator, 
+			pState->device, 
+			pState->renderPass, 
+			sizeof(attachments) / sizeof(attachments[0]), 
+			attachments, 
+			windowWidth, 
+			windowHeight, 
+			&pState->pSwapchainImageInfos[swapchainImageInfoIndex].framebuffer);
+	}
+
 	// === FRAME INFOS SETUP ====
 
-	VkDescriptorSetLayoutBinding bindings[2];
+	VkDescriptorSetLayoutBinding bindings[1];
 	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	bindings[0].pImmutableSamplers = NULL;
-
-	bindings[1].binding = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[1].descriptorCount = 1;
-	bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-	bindings[1].pImmutableSamplers = NULL;
 
 	TRM_Renderer_createDescriptorSetLayout(pState->pAllocator, pState->device, sizeof(bindings) / sizeof(bindings[0]), bindings, &pState->descriptorSetLayout);
 
@@ -1404,11 +1473,51 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		TRM_Renderer_createSemaphore(pState->pAllocator, pState->device, &pState->pFrameInfos[frameIndex].imageAvailableSemaphore);
 		TRM_Renderer_allocateDescriptorSet(pState->device, pState->descriptorPool, pState->descriptorSetLayout, &pState->pFrameInfos[frameIndex].descriptorSet);
 
-		struct TRM_Renderer_Resource uniformBuffer = {0};
+		struct TRM_Renderer_Resource vertexBuffer = {0};
 
-		uniformBuffer.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
-		uniformBuffer.accessFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		uniformBuffer.stageFlags = VK_ACCESS_NONE;
+		vertexBuffer.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
+		vertexBuffer.accessFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		vertexBuffer.stageFlags = VK_ACCESS_NONE;
+
+		TRM_Renderer_createBuffer(
+			pState->pAllocator,
+			pState->device,
+			sizeof(struct Vertex) * 3,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+			pState->queueFamilyIndex,
+			&vertexBuffer.info.buffer.buffer);
+
+		TRM_Renderer_allocateMemoryForBuffer(
+			pState->pAllocator,
+			pState->physicalDevice,
+			pState->device,
+			vertexBuffer.info.buffer.buffer,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&vertexBuffer.info.buffer.memory);
+
+		if(vkBindBufferMemory(
+			pState->device,
+			vertexBuffer.info.buffer.buffer,
+			vertexBuffer.info.buffer.memory,
+			0) != VK_SUCCESS)
+		{
+			exit(EXIT_FAILURE);
+		}
+
+		struct Vertex vertices[3] = {
+			{-1.0f, 0.0f, 1.0f},
+			{0.0f, 1.0f, 1.0f},
+			{1.0f, 0.0f, 1.0f}
+		};
+
+		void* pData = NULL;
+		vkMapMemory(pState->device, vertexBuffer.info.buffer.memory, 0, sizeof(struct Vertex) * 3, 0, &pData);
+		TRM_Memory_memcpy(sizeof(struct Vertex) * 3, vertices, pData);
+		vkUnmapMemory(pState->device, vertexBuffer.info.buffer.memory);
+
+		TRM_Arena_add(&vertexBuffer, &pState->resources, &pState->pFrameInfos[frameIndex].vertexBufferIndex);
+
+		struct TRM_Renderer_Resource uniformBuffer = {0};
 
 		TRM_Renderer_createBuffer(
 			pState->pAllocator,
@@ -1440,17 +1549,61 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 
 	pState->frameIndex = 0;
 	
-	VkShaderModule computeShaderModule;
-	uint32_t codeSize = 0;
-	uint32_t* pCode = NULL;
-	TRM_Renderer_readShader(PROJECT_ROOT "/assets/shaders/compute.spv", &codeSize, &pCode);
-	TRM_Renderer_createShaderModule(pState->pAllocator, pState->device, codeSize, pCode, &computeShaderModule);
+	VkShaderModule vertexShaderModule;
+	{
+		uint32_t codeSize = 0;
+		uint32_t* pCode = NULL;
+		TRM_Renderer_readShader(PROJECT_ROOT "/assets/shaders/vertex.spv", &codeSize, &pCode);
+		TRM_Renderer_createShaderModule(pState->pAllocator, pState->device, codeSize, pCode, &vertexShaderModule);
+		TRM_Memory_deallocate(pCode);
+	}
+
+	VkShaderModule fragmentShaderModule;
 	
-	TRM_Renderer_createPipelineLayout(pState->pAllocator, pState->device, 1, &pState->descriptorSetLayout, &pState->computePipelineLayout);
-	TRM_Renderer_createComputePipeline(pState->pAllocator, pState->device, computeShaderModule, pState->computePipelineLayout, &pState->computePipeline);
+	{
+		uint32_t codeSize = 0;
+		uint32_t* pCode = NULL;
+		TRM_Renderer_readShader(PROJECT_ROOT "/assets/shaders/fragment.spv", &codeSize, &pCode);
+		TRM_Renderer_createShaderModule(pState->pAllocator, pState->device, codeSize, pCode, &fragmentShaderModule);
+		TRM_Memory_deallocate(pCode);
+	}
+
+	TRM_Renderer_createPipelineLayout(pState->pAllocator, pState->device, 1, &pState->descriptorSetLayout, &pState->graphicsPipelineLayout);
+
+	VkVertexInputBindingDescription vertexBindingDescription = {0};
+	vertexBindingDescription.binding = 0;
+	vertexBindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	vertexBindingDescription.stride = sizeof(struct Vertex);
+
+	VkVertexInputAttributeDescription vertexAttributeDescriptions = {0};
+	vertexAttributeDescriptions.binding = 0;
+	vertexAttributeDescriptions.format = VK_FORMAT_R32G32B32_SFLOAT;
+	vertexAttributeDescriptions.location = 0;
+	vertexAttributeDescriptions.offset = 0;
+
+	VkPipelineVertexInputStateCreateInfo vertexInputStateCreateInfo = {0};
+	vertexInputStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertexInputStateCreateInfo.pNext = NULL;
+	vertexInputStateCreateInfo.flags = 0;
+	vertexInputStateCreateInfo.vertexBindingDescriptionCount = 1;
+	vertexInputStateCreateInfo.pVertexBindingDescriptions = &vertexBindingDescription;
+	vertexInputStateCreateInfo.vertexAttributeDescriptionCount = 1;
+	vertexInputStateCreateInfo.pVertexAttributeDescriptions = &vertexAttributeDescriptions;
+
+	TRM_Renderer_createGraphicsPipeline(
+		pState->pAllocator, 
+		pState->device, 
+		vertexShaderModule, 
+		fragmentShaderModule, 
+		vertexInputStateCreateInfo, 
+		pState->graphicsPipelineLayout, 
+		pState->renderPass, 
+		500, // TODO
+		500, // TODO
+		&pState->graphicsPipeline);
 	
-	vkDestroyShaderModule(pState->device, computeShaderModule, pState->pAllocator);
-	TRM_Memory_deallocate(pCode);
+	vkDestroyShaderModule(pState->device, vertexShaderModule, pState->pAllocator);
+	vkDestroyShaderModule(pState->device, fragmentShaderModule, pState->pAllocator);
 }
 
 void TRM_Renderer_terminate(void)
@@ -1464,6 +1617,12 @@ void TRM_Renderer_terminate(void)
 
 		for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_FRAME_COUNT; ++frameIndex)
 		{
+			struct TRM_Renderer_Resource* pVertexBuffer;
+			TRM_Arena_get(pState->pFrameInfos[frameIndex].vertexBufferIndex, pState->resources, (void**)&pVertexBuffer);
+
+			vkDestroyBuffer(pState->device, pVertexBuffer->info.buffer.buffer, pState->pAllocator);
+			vkFreeMemory(pState->device, pVertexBuffer->info.buffer.memory, pState->pAllocator);
+
 			struct TRM_Renderer_Resource* pUniformBuffer;
 			TRM_Arena_get(pState->pFrameInfos[frameIndex].uniformBufferIndex, pState->resources, (void**)&pUniformBuffer);
 
@@ -1474,14 +1633,17 @@ void TRM_Renderer_terminate(void)
 			vkDestroyFence(pState->device, pState->pFrameInfos[frameIndex].commandBufferExecutedFence, pState->pAllocator);
 		}
 
-		vkDestroyPipeline(pState->device, pState->computePipeline, pState->pAllocator);
-		vkDestroyPipelineLayout(pState->device, pState->computePipelineLayout, pState->pAllocator);
+		vkDestroyPipeline(pState->device, pState->graphicsPipeline, pState->pAllocator);
+		vkDestroyPipelineLayout(pState->device, pState->graphicsPipelineLayout, pState->pAllocator);
 		vkDestroyDescriptorSetLayout(pState->device, pState->descriptorSetLayout, pState->pAllocator);
+		vkDestroyRenderPass(pState->device, pState->renderPass, pState->pAllocator);
 		
 		TRM_Memory_deallocate(pState->pFrameInfos);
 
 		for(uint32_t swapchainImageIndex = 0; swapchainImageIndex < pState->swapchainImageCount; ++swapchainImageIndex)
 		{
+			vkDestroyFramebuffer(pState->device, pState->pSwapchainImageInfos[swapchainImageIndex].framebuffer, pState->pAllocator);
+			
 			struct TRM_Renderer_Resource* pSwapchainColorImage;
 			TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageIndex].colorImageIndex, pState->resources, (void**)&pSwapchainColorImage);
 
@@ -1556,70 +1718,63 @@ void TRM_Renderer_render(void)
 	struct TRM_Renderer_Resource* pSwapchainColorImage;
 	TRM_Arena_get(pState->pSwapchainImageInfos[imageIndex].colorImageIndex, pState->resources, (void**)&pSwapchainColorImage);
 
-	pState->pFrameInfos[pState->frameIndex].imageIndex = pState->pSwapchainImageInfos[imageIndex].colorImageIndex;
-
-	VkDescriptorImageInfo imageInfo = {0};
-	imageInfo.sampler = VK_NULL_HANDLE;
-	imageInfo.imageView = pSwapchainColorImage->info.image.imageView;
-	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
 	VkDescriptorBufferInfo bufferInfo = {0};
 	bufferInfo.buffer = pUniformBuffer->info.buffer.buffer;
 	bufferInfo.offset = 0;
 	bufferInfo.range = VK_WHOLE_SIZE;
 
-	VkWriteDescriptorSet descriptorWrites[2];
+	VkWriteDescriptorSet descriptorWrites[1];
 	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[0].pNext = NULL;
 	descriptorWrites[0].dstSet = pState->pFrameInfos[pState->frameIndex].descriptorSet;
 	descriptorWrites[0].dstBinding = 0;
 	descriptorWrites[0].dstArrayElement = 0;
 	descriptorWrites[0].descriptorCount = 1;
-	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	descriptorWrites[0].pImageInfo = &imageInfo;
-	descriptorWrites[0].pBufferInfo = NULL;
+	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	descriptorWrites[0].pImageInfo = NULL;
+	descriptorWrites[0].pBufferInfo = &bufferInfo;
 	descriptorWrites[0].pTexelBufferView = NULL;
-
-	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[1].pNext = NULL;
-	descriptorWrites[1].dstSet = pState->pFrameInfos[pState->frameIndex].descriptorSet;
-	descriptorWrites[1].dstBinding = 1;
-	descriptorWrites[1].dstArrayElement = 0;
-	descriptorWrites[1].descriptorCount = 1;
-	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	descriptorWrites[1].pImageInfo = NULL;
-	descriptorWrites[1].pBufferInfo = &bufferInfo;
-	descriptorWrites[1].pTexelBufferView = NULL;
 
 	vkUpdateDescriptorSets(pState->device, sizeof(descriptorWrites) / sizeof(descriptorWrites[0]), descriptorWrites, 0, NULL);
 
-	struct TRM_Renderer_ResourceAccess inputs[1];
-	inputs[0].resourceIndex = pState->pFrameInfos[pState->frameIndex].uniformBufferIndex;
-	inputs[0].accessFlags = VK_ACCESS_SHADER_READ_BIT;
-	inputs[0].stageFlags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	struct TRM_Renderer_ResourceAccess inputs[2];
+	inputs[0].resourceIndex = pState->pFrameInfos[pState->frameIndex].vertexBufferIndex;
+	inputs[0].accessFlags = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+	inputs[0].stageFlags = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
 
-	struct TRM_Renderer_ResourceAccess outputs[1];
-	outputs[0].resourceIndex = pState->pFrameInfos[pState->frameIndex].imageIndex;
-	outputs[0].accessFlags = VK_ACCESS_SHADER_WRITE_BIT;
-	outputs[0].stageFlags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-	outputs[0].layout = VK_IMAGE_LAYOUT_GENERAL;
+	inputs[1].resourceIndex = pState->pFrameInfos[pState->frameIndex].uniformBufferIndex;
+	inputs[1].accessFlags = VK_ACCESS_SHADER_READ_BIT;
+	inputs[1].stageFlags = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+
+	struct TRM_Renderer_ResourceAccess outputs[2];
+	outputs[0].resourceIndex = pState->pSwapchainImageInfos[imageIndex].colorImageIndex;
+	outputs[0].accessFlags = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	outputs[0].stageFlags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	outputs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	
+	outputs[1].resourceIndex = pState->pSwapchainImageInfos[imageIndex].depthImageIndex;
+	outputs[1].accessFlags = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	outputs[1].stageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+	outputs[1].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	struct TRM_Renderer_Pass passes[2];
-	passes[0].type = TRM_RENDERER_PASS_TYPE_DISPATCH;
+	passes[0].type = TRM_RENDERER_PASS_TYPE_DRAW;
 	passes[0].inputCount = sizeof(inputs) / sizeof(inputs[0]);
 	passes[0].pInputs = inputs;
 	passes[0].outputCount = sizeof(outputs) / sizeof(outputs[0]);
 	passes[0].pOutputs = outputs;
-	passes[0].info.dispatch.groupCountX = (500 + (8 - 1)) / 8;
-	passes[0].info.dispatch.groupCountY = (500 + (8 - 1)) / 8;
-	passes[0].info.dispatch.groupCountZ = 1;
-	passes[0].info.dispatch.descriptorSetCount = 1;
-	passes[0].info.dispatch.pDescriptorSets = &pState->pFrameInfos[pState->frameIndex].descriptorSet;
-	passes[0].info.dispatch.pipelineLayout = pState->computePipelineLayout;
-	passes[0].info.dispatch.pipeline = pState->computePipeline;
+	passes[0].info.draw.width = 500; // TODO
+	passes[0].info.draw.height = 500; // TODO
+	passes[0].info.draw.vertexCount = 3;
+	passes[0].info.draw.renderPass = pState->renderPass;
+	passes[0].info.draw.framebuffer = pState->pSwapchainImageInfos[imageIndex].framebuffer;
+	passes[0].info.draw.pipelineLayout = pState->graphicsPipelineLayout;
+	passes[0].info.draw.descriptorSetCount = 1;
+	passes[0].info.draw.pDescriptorSets = &pState->pFrameInfos[pState->frameIndex].descriptorSet;
+	passes[0].info.draw.pipeline = pState->graphicsPipeline;
 
 	struct TRM_Renderer_ResourceAccess present;
-	present.resourceIndex = pState->pFrameInfos[pState->frameIndex].imageIndex;
+	present.resourceIndex = pState->pSwapchainImageInfos[imageIndex].colorImageIndex;
 	present.accessFlags = VK_ACCESS_NONE;
 	present.stageFlags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 	present.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
