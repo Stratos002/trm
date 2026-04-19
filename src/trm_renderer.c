@@ -138,6 +138,9 @@ struct TRM_Renderer_State
 	VkCommandPool commandPool;
 	VkDescriptorPool descriptorPool;
 	VkSwapchainKHR swapchain;
+	VkFormat swapchainFormat;
+	uint32_t swapchainWidth;
+	uint32_t swapchainHeight;
 	uint32_t swapchainImageCount;
 	struct TRM_Renderer_SwapchainImageInfo* pSwapchainImageInfos;
 	struct TRM_Renderer_FrameInfo* pFrameInfos;
@@ -303,11 +306,14 @@ static void TRM_Renderer_createSwapchain(
 	VkPhysicalDevice physicalDevice,
 	VkDevice device,
 	VkSurfaceKHR surface,
-	VkFormat format,
-	uint32_t windowWidth,
-	uint32_t windowHeight,
+	uint32_t wantedWidth,
+	uint32_t wantedHeight,
+	bool vsync,
 	uint32_t queueFamilyIndex,
-	VkSwapchainKHR* pSwapchain)
+	VkSwapchainKHR* pSwapchain, 
+	VkFormat* pFormat, 
+	uint32_t* pWidth,
+	uint32_t* pHeight)
 {
 	VkSurfaceCapabilitiesKHR surfaceCapabilities = {0};
 	if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities) != VK_SUCCESS)
@@ -315,10 +321,96 @@ static void TRM_Renderer_createSwapchain(
 		exit(EXIT_FAILURE);
 	}
 
+	// query image count
 	uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
 	if(surfaceCapabilities.maxImageCount > 0 && imageCount > surfaceCapabilities.maxImageCount)
 	{
 		imageCount = surfaceCapabilities.maxImageCount;
+	}
+
+	// query extent
+	if(surfaceCapabilities.currentExtent.width != UINT32_MAX)
+	{
+		*pWidth = surfaceCapabilities.currentExtent.width;
+		*pHeight = surfaceCapabilities.currentExtent.height;
+	}
+	else
+	{
+		*pWidth = wantedWidth;
+		if(*pWidth < surfaceCapabilities.minImageExtent.width)
+		{
+			*pWidth = surfaceCapabilities.minImageExtent.width;
+		}
+		if(*pWidth > surfaceCapabilities.maxImageExtent.width)
+		{
+			*pWidth = surfaceCapabilities.maxImageExtent.width;
+		}
+		
+		*pHeight = wantedHeight;
+		if(*pHeight < surfaceCapabilities.minImageExtent.height)
+		{
+			*pHeight = surfaceCapabilities.minImageExtent.height;
+		}
+		if(*pHeight > surfaceCapabilities.maxImageExtent.height)
+		{
+			*pHeight = surfaceCapabilities.maxImageExtent.height;
+		}
+	}
+
+	// query format
+	uint32_t formatCount = 0;
+	VkSurfaceFormatKHR* pSurfaceFormats = NULL;
+	vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, NULL);
+	TRM_Memory_allocate(sizeof(VkSurfaceFormatKHR) * formatCount, (void**)&pSurfaceFormats);
+	vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, pSurfaceFormats);
+
+	if(formatCount == 0)
+	{
+		exit(EXIT_FAILURE);
+	}
+
+	VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+	bool formatFound = false;
+	for(uint32_t formatIndex = 0; formatIndex < formatCount; ++formatIndex)
+	{
+		if(pSurfaceFormats[formatIndex].format == VK_FORMAT_B8G8R8A8_SRGB && 
+			pSurfaceFormats[formatIndex].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+		{
+			*pFormat = VK_FORMAT_B8G8R8A8_SRGB;
+			colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+			formatFound = true;
+			break;
+		}
+	}
+
+	if(!formatFound)
+	{
+		exit(EXIT_FAILURE);
+	}
+
+	*pFormat = pSurfaceFormats[0].format;
+	
+	TRM_Memory_deallocate((void*)pSurfaceFormats);
+
+	VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+	if(!vsync)
+	{
+		// query present mode
+		uint32_t presentModeCount = 0;
+		VkPresentModeKHR* pPresentModes = NULL;
+		vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, NULL);
+		TRM_Memory_allocate(sizeof(VkPresentModeKHR) * presentModeCount, (void**)&pPresentModes);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, pPresentModes);
+
+		for(uint32_t presentModeIndex = 0; presentModeIndex < presentModeCount; ++presentModeIndex)
+		{
+			if(pPresentModes[presentModeIndex] == VK_PRESENT_MODE_MAILBOX_KHR)
+			{
+				presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+			}
+		}
+
+		TRM_Memory_deallocate((void*)pPresentModes);
 	}
 
 	VkSwapchainCreateInfoKHR swapchainCreateInfo = {0};
@@ -327,18 +419,18 @@ static void TRM_Renderer_createSwapchain(
 	swapchainCreateInfo.flags = 0;
 	swapchainCreateInfo.surface = surface;
 	swapchainCreateInfo.minImageCount = imageCount;
-	swapchainCreateInfo.imageFormat = format; // we should query this
-	swapchainCreateInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR; // we should query this
-	swapchainCreateInfo.imageExtent.width = windowWidth;
-	swapchainCreateInfo.imageExtent.height = windowHeight;
+	swapchainCreateInfo.imageFormat = *pFormat;
+	swapchainCreateInfo.imageColorSpace = colorSpace;
+	swapchainCreateInfo.imageExtent.width = *pWidth;
+	swapchainCreateInfo.imageExtent.height = *pHeight;
 	swapchainCreateInfo.imageArrayLayers = 1;
-	swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+	swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swapchainCreateInfo.queueFamilyIndexCount = 1;
 	swapchainCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
 	swapchainCreateInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-	swapchainCreateInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+	swapchainCreateInfo.presentMode = presentMode;
 	swapchainCreateInfo.clipped = VK_TRUE;
 	swapchainCreateInfo.oldSwapchain = VK_NULL_HANDLE;
 
@@ -723,55 +815,17 @@ static void TRM_Renderer_createComputePipeline(
 static void TRM_Renderer_createRenderPass(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device, 
+	uint32_t attachmentDescriptionCount,
+	VkAttachmentDescription* pAttachmentDescriptions,
+	VkSubpassDescription subpassDescription,
 	VkRenderPass* pRenderPass)
 {
-	VkAttachmentDescription attachmentDescriptions[2];
-	attachmentDescriptions[0].flags = 0;
-	attachmentDescriptions[0].format = VK_FORMAT_R8G8B8A8_UNORM;
-	attachmentDescriptions[0].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachmentDescriptions[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachmentDescriptions[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachmentDescriptions[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachmentDescriptions[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachmentDescriptions[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	attachmentDescriptions[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-	attachmentDescriptions[1].flags = 0;
-	attachmentDescriptions[1].format = VK_FORMAT_D32_SFLOAT;
-	attachmentDescriptions[1].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachmentDescriptions[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachmentDescriptions[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachmentDescriptions[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachmentDescriptions[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachmentDescriptions[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	attachmentDescriptions[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-	VkAttachmentReference colorAttachmentReference = {0};
-	colorAttachmentReference.attachment = 0;
-	colorAttachmentReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-	VkAttachmentReference depthAttachmentReference = {0};
-	depthAttachmentReference.attachment = 1;
-	depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-	VkSubpassDescription subpassDescription = {0};
-	subpassDescription.flags = 0;
-	subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subpassDescription.inputAttachmentCount = 0;
-	subpassDescription.pInputAttachments = NULL;
-	subpassDescription.colorAttachmentCount = 1;
-	subpassDescription.pColorAttachments = &colorAttachmentReference;
-	subpassDescription.pResolveAttachments = NULL;
-	subpassDescription.pDepthStencilAttachment = &depthAttachmentReference;
-	subpassDescription.preserveAttachmentCount = 0;
-	subpassDescription.pPreserveAttachments = NULL;
-
 	VkRenderPassCreateInfo renderPassCreateInfo = {0};
 	renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 	renderPassCreateInfo.pNext = NULL;
 	renderPassCreateInfo.flags = 0;
-	renderPassCreateInfo.attachmentCount = sizeof(attachmentDescriptions) / sizeof(attachmentDescriptions[0]);
-	renderPassCreateInfo.pAttachments = attachmentDescriptions;
+	renderPassCreateInfo.attachmentCount = attachmentDescriptionCount;
+	renderPassCreateInfo.pAttachments = pAttachmentDescriptions;
 	renderPassCreateInfo.subpassCount = 1;
 	renderPassCreateInfo.pSubpasses = &subpassDescription;
 	renderPassCreateInfo.dependencyCount = 0;
@@ -1218,16 +1272,6 @@ static void TRM_Renderer_fillCommandBuffer(
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-			VkViewport viewport = {0};
-			viewport.x = 0.0f;
-			viewport.y = -1.0f;
-			viewport.width = 500;
-			viewport.height = 500;
-			viewport.minDepth = 0.0f;
-			viewport.maxDepth = 1.0f;
-
-			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
 			VkDeviceSize offset = 0;
 			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &pResources[pPasses[passIndex].pInputs[0].resourceIndex].info.buffer.buffer, &offset);
 
@@ -1326,17 +1370,19 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	TRM_Renderer_createCommandPool(pState->pAllocator, pState->device, pState->queueFamilyIndex, &pState->commandPool);
 	TRM_Renderer_createDescriptorPool(pState->pAllocator, pState->device, &pState->descriptorPool);
 
-	VkFormat swapchainFormat = VK_FORMAT_R8G8B8A8_UNORM; // we should query this
 	TRM_Renderer_createSwapchain(
 		pState->pAllocator,
 		pState->physicalDevice,
 		pState->device,
 		pState->surface,
-		swapchainFormat,
 		windowWidth,
 		windowHeight,
+		true,
 		pState->queueFamilyIndex,
-		&pState->swapchain);
+		&pState->swapchain, 
+		&pState->swapchainFormat, 
+		&pState->swapchainWidth, 
+		&pState->swapchainHeight);
 
 	TRM_Arena_create(sizeof(struct TRM_Renderer_Resource), TRM_RENDERER_MAX_RESOURCE_COUNT, &pState->resources);
 
@@ -1361,7 +1407,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 			pState->pAllocator,
 			pState->device,
 			pSwapchainImages[swapchainImageIndex],
-			swapchainFormat,
+			pState->swapchainFormat,
 			VK_IMAGE_ASPECT_COLOR_BIT,
 			&swapchainColorImage.info.image.imageView);
 
@@ -1429,7 +1475,54 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 
 	TRM_Memory_deallocate(pSwapchainImages);
 
-	TRM_Renderer_createRenderPass(pState->pAllocator, pState->device, &pState->renderPass);
+	VkAttachmentDescription attachmentDescriptions[2];
+	attachmentDescriptions[0].flags = 0;
+	attachmentDescriptions[0].format = pState->swapchainFormat;
+	attachmentDescriptions[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachmentDescriptions[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachmentDescriptions[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachmentDescriptions[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachmentDescriptions[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachmentDescriptions[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	attachmentDescriptions[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	attachmentDescriptions[1].flags = 0;
+	attachmentDescriptions[1].format = VK_FORMAT_D32_SFLOAT;
+	attachmentDescriptions[1].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachmentDescriptions[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachmentDescriptions[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachmentDescriptions[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachmentDescriptions[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachmentDescriptions[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachmentDescriptions[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+	VkAttachmentReference colorAttachmentReference = {0};
+	colorAttachmentReference.attachment = 0;
+	colorAttachmentReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	VkAttachmentReference depthAttachmentReference = {0};
+	depthAttachmentReference.attachment = 1;
+	depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+	VkSubpassDescription subpassDescription = {0};
+	subpassDescription.flags = 0;
+	subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpassDescription.inputAttachmentCount = 0;
+	subpassDescription.pInputAttachments = NULL;
+	subpassDescription.colorAttachmentCount = 1;
+	subpassDescription.pColorAttachments = &colorAttachmentReference;
+	subpassDescription.pResolveAttachments = NULL;
+	subpassDescription.pDepthStencilAttachment = &depthAttachmentReference;
+	subpassDescription.preserveAttachmentCount = 0;
+	subpassDescription.pPreserveAttachments = NULL;
+
+	TRM_Renderer_createRenderPass(
+		pState->pAllocator, 
+		pState->device, 
+		sizeof(attachmentDescriptions) / sizeof(attachmentDescriptions[0]), 
+		attachmentDescriptions, 
+		subpassDescription, 
+		&pState->renderPass);
 
 	for(uint32_t swapchainImageInfoIndex = 0; swapchainImageInfoIndex < pState->swapchainImageCount; ++swapchainImageInfoIndex)
 	{
@@ -1600,8 +1693,8 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		vertexInputStateCreateInfo, 
 		pState->graphicsPipelineLayout, 
 		pState->renderPass, 
-		500, // TODO
-		500, // TODO
+		pState->swapchainWidth,
+		pState->swapchainHeight,
 		&pState->graphicsPipeline);
 	
 	vkDestroyShaderModule(pState->device, vertexShaderModule, pState->pAllocator);
@@ -1765,8 +1858,8 @@ void TRM_Renderer_render(void)
 	passes[0].pInputs = inputs;
 	passes[0].outputCount = sizeof(outputs) / sizeof(outputs[0]);
 	passes[0].pOutputs = outputs;
-	passes[0].info.draw.width = 500; // TODO
-	passes[0].info.draw.height = 500; // TODO
+	passes[0].info.draw.width = pState->swapchainWidth;
+	passes[0].info.draw.height = pState->swapchainHeight;
 	passes[0].info.draw.vertexCount = 3;
 	passes[0].info.draw.renderPass = pState->renderPass;
 	passes[0].info.draw.framebuffer = pState->pSwapchainImageInfos[imageIndex].framebuffer;
