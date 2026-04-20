@@ -55,9 +55,19 @@ void TRM_Matrix4x4_multiplyWithVector4(struct TRM_Matrix4x4 matrix, struct TRM_V
 
 void TRM_Matrix4x4_getIdentity(struct TRM_Matrix4x4* pResult)
 {
-	for(uint32_t i = 0; i < 4; ++i)
+	for(uint32_t j = 0; j < 4; ++j)
 	{
-		pResult->m[i][i] = 1.0f;
+		for(uint32_t i = 0; i < 4; ++i)
+		{
+			if(i == j)
+			{
+				pResult->m[j][i] = 1.0f;
+			}
+			else
+			{
+				pResult->m[j][i] = 0.0f;
+			}
+		}
 	}
 }
 
@@ -138,6 +148,8 @@ void TRM_Matrix4x4_getInverseRotation(float yaw, float pitch, float roll, struct
 
 void TRM_Matrix4x4_getTranslation(struct TRM_Vector3 position, struct TRM_Matrix4x4* pResult)
 {
+	TRM_Matrix4x4_getIdentity(pResult);
+
 	pResult->m[0][3] = position.x;
 	pResult->m[1][3] = position.y;
 	pResult->m[2][3] = position.z;
@@ -154,6 +166,8 @@ void TRM_Matrix4x4_getView(struct TRM_Vector3 position, float yaw, float pitch, 
 
 void TRM_Matrix4x4_getProjection(float fov, float aspectRatio, struct TRM_Matrix4x4* pResult)
 {
+	TRM_Matrix4x4_getIdentity(pResult);
+
 	const float invTanHalfFov = 1.0f / tanf(fov / 2.0f);
 
 	const float zNear = 1.0f;

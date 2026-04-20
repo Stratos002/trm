@@ -12,8 +12,17 @@
 #include <math.h>
 #include <stdbool.h>
 
-#define TRM_RENDERER_FRAME_COUNT 3
+// having 1 more frame in flight could hide lag spikes from the GPU, but I don't think it's worth the memory cost
+#define TRM_RENDERER_FRAME_COUNT 2 
 #define TRM_RENDERER_MAX_RESOURCE_COUNT 64
+
+// for later
+/*
+device local buffers : can be shared across all frames (vertex buffers, textures, depth), must sync access with barriers. 
+					   (it's not worth having cross frame parallelism as there are usually enough intra frame parallelism)
+host visible buffers : frequently written by the CPU, we must keep one copy per frame (uniform buffers)
+occasionally updated buffers : rarely written by the CPU, we can have one device local copy + copy buffer (which could be recyclable) [for later]
+*/
 
 struct TRM_Renderer_ResourceInfoBuffer
 {
@@ -166,7 +175,7 @@ static void TRM_Renderer_createInstance(const VkAllocationCallbacks* pAllocator,
 	applicationInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 	applicationInfo.pEngineName = "TRM";
 	applicationInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-	applicationInfo.apiVersion = VK_MAKE_API_VERSION(1, 0, 0, 0);
+	applicationInfo.apiVersion = VK_MAKE_API_VERSION(1, 2, 0, 0);
 
 	const char* pValidationLayerName = "VK_LAYER_KHRONOS_validation";
 
@@ -905,9 +914,9 @@ static void TRM_Renderer_createGraphicsPipeline(
 
 	VkViewport viewport = {0};
 	viewport.x = 0;
-	viewport.y = 0;
+	viewport.y = (float)viewportHeight;
 	viewport.width = (float)viewportWidth;
-	viewport.height = (float)viewportHeight;
+	viewport.height = -(float)viewportHeight;
 	viewport.minDepth = 0;
 	viewport.maxDepth = 1.0f;
 
@@ -1330,6 +1339,12 @@ static void TRM_Renderer_fillCommandBuffer(
 	}
 }
 
+struct UniformBuffer
+{
+	struct TRM_Matrix4x4 projection;
+	struct TRM_Matrix4x4 transformation;
+};
+
 struct Vertex
 {
 	float x;
@@ -1371,7 +1386,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		pState->surface,
 		windowWidth,
 		windowHeight,
-		true,
+		false,
 		pState->queueFamilyIndex,
 		&pState->swapchain, 
 		&pState->swapchainFormat, 
@@ -1594,9 +1609,9 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		}
 
 		struct Vertex vertices[3] = {
-			{-1.0f, 0.0f, 1.0f},
-			{0.0f, 1.0f, 1.0f},
-			{1.0f, 0.0f, 1.0f}
+			{-1.0f, -1.0f, 0.0f},
+			{0.0f, 1.0f, 0.0f},
+			{1.0f, -1.0f, 0.0f}
 		};
 
 		void* pData = NULL;
@@ -1611,7 +1626,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		TRM_Renderer_createBuffer(
 			pState->pAllocator,
 			pState->device,
-			sizeof(float) * 4,
+			sizeof(struct UniformBuffer),
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			pState->queueFamilyIndex,
 			&uniformBuffer.info.buffer.buffer);
@@ -1781,13 +1796,28 @@ void TRM_Renderer_render(void)
 	TRM_Arena_get(pState->pFrameInfos[pState->frameIndex].uniformBufferIndex, pState->resources, (void**)&pUniformBuffer);
 
 	{
+		struct UniformBuffer uniformBuffer;
+
+		struct TRM_Matrix4x4 rotation;
+		struct TRM_Matrix4x4 translation;
+
+		struct TRM_Vector3 tra;
+		tra.x = 0.0f;
+		tra.y = 0.0f;
+		tra.z = 5.0f;
+
 		static float toy = 0.0f;
-		float color[4] = {(cosf(toy) + 1) / 2, (sinf(toy) + 1) / 2, (cosf(toy) + 1) / 2, 1.0f};
+		TRM_Matrix4x4_getProjection(1.2f, 1.0f, &uniformBuffer.projection);
+		TRM_Matrix4x4_transpose(&uniformBuffer.projection);
+		TRM_Matrix4x4_getRotation(toy, 0.0f, 0.0f, &rotation);
+		TRM_Matrix4x4_getTranslation(tra, &translation);
+		TRM_Matrix4x4_multiplyWithMatrix4x4(translation, rotation, &uniformBuffer.transformation);
+		TRM_Matrix4x4_transpose(&uniformBuffer.transformation);
 		toy += 0.01f;
 
 		void* pData = NULL;
-		vkMapMemory(pState->device, pUniformBuffer->info.buffer.memory, 0, sizeof(color), 0, &pData);
-		TRM_Memory_memcpy(sizeof(color), color, pData);
+		vkMapMemory(pState->device, pUniformBuffer->info.buffer.memory, 0, sizeof(struct UniformBuffer), 0, &pData);
+		TRM_Memory_memcpy(sizeof(struct UniformBuffer), &uniformBuffer, pData);
 		vkUnmapMemory(pState->device, pUniformBuffer->info.buffer.memory);
 	}
 
@@ -1846,7 +1876,7 @@ void TRM_Renderer_render(void)
 	outputs[1].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	VkClearValue clears[2];
-	clears[0].color.float32[0] = 1.0f;
+	clears[0].color.float32[0] = 0.3f;
 	clears[0].color.float32[1] = 0.0f;
 	clears[0].color.float32[2] = 0.0f;
 	clears[0].color.float32[3] = 1.0f;
