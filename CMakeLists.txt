@@ -20,7 +20,8 @@ target_include_directories(
 	PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/external/volk
 	${CMAKE_CURRENT_SOURCE_DIR}/external/glfw/include
-	${CMAKE_CURRENT_SOURCE_DIR}/external/vulkan_headers)
+	${CMAKE_CURRENT_SOURCE_DIR}/external/vulkan_headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/stb)
 
 # warnings and errors
 if(MSVC)

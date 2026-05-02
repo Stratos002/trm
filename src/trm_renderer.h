@@ -50,8 +50,7 @@ enum TRM_Renderer_DescriptorType
 	TRM_RENDERER_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 	TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 	TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-	TRM_RENDERER_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-	TRM_RENDERER_DESCRIPTOR_TYPE_SAMPLER,
+	TRM_RENDERER_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 };
 
 enum TRM_Renderer_PassType
@@ -186,8 +185,6 @@ void TRM_Renderer_createBuffer(struct TRM_Renderer_BufferCreateInfo info, uint32
 void TRM_Renderer_createImage(struct TRM_Renderer_ImageCreateInfo info, uint32_t* pHandle);
 
 void TRM_Renderer_destroyResource(uint32_t handle);
-
-void TRM_Renderer_createSampler(uint32_t* pHandle);
 
 void TRM_Renderer_writeBuffer(uint32_t sizeInBytes, const void* pData, uint32_t handle);
 

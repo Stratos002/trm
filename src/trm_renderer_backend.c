@@ -30,8 +30,7 @@ enum TRM_Renderer_Backend_ResourceType
 {
 	TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER,
 	TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER_INDIRECTION,
-	TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE,
-	TRM_RENDERER_BACKEND_RESOURCE_TYPE_SAMPLER
+	TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE
 };
 
 struct TRM_Renderer_Backend_HostVisibleBufferIndirectionInfo
@@ -69,11 +68,6 @@ struct TRM_Renderer_Backend_ImageResourceInfo
 	bool swapchainImage;
 };
 
-struct TRM_Renderer_Backend_SamplerResourceInfo
-{
-	VkSampler sampler;
-};
-
 struct TRM_Renderer_Backend_ResourceState
 {
 	VkAccessFlags access;
@@ -90,7 +84,6 @@ struct TRM_Renderer_Backend_Resource
 		struct TRM_Renderer_Backend_BufferResourceInfo buffer;
 		struct TRM_Renderer_Backend_BufferIndirectionResourceInfo bufferIndirection;
 		struct TRM_Renderer_Backend_ImageResourceInfo image;
-		struct TRM_Renderer_Backend_SamplerResourceInfo sampler;
 	} info;
 };
 
@@ -166,7 +159,6 @@ struct TRM_Renderer_Backend_BlitPassInstanceInfo
 	uint32_t height;
 };
 
-
 struct TRM_Renderer_Backend_PassInstance
 {
 	enum TRM_Renderer_PassType type;
@@ -220,6 +212,7 @@ struct TRM_Renderer_Backend_State
 	struct TRM_Renderer_Backend_SwapchainImageInfo* pSwapchainImageInfos;
 	struct TRM_Renderer_Backend_FrameInfo* pFrameInfos;
 	uint32_t frameIndex;
+	VkSampler globalSampler;
 	struct TRM_Arena resources;
 	struct TRM_Arena passes;
 };
@@ -778,15 +771,15 @@ static void TRM_Renderer_Backend_createDescriptorPool(const VkAllocationCallback
 	storageImageDescriptorPoolSize.descriptorCount = 10;
 	storageImageDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
-	VkDescriptorPoolSize samplerDescriptorPoolSize = {0};
-	samplerDescriptorPoolSize.descriptorCount = 10;
-	samplerDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_SAMPLER;
+	VkDescriptorPoolSize combinedImageSamplerDescriptorPoolSize = {0};
+	combinedImageSamplerDescriptorPoolSize.descriptorCount = 10;
+	combinedImageSamplerDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
 	VkDescriptorPoolSize descriptorPoolSizes[] = {
 		uniformBufferDescriptorPoolSize,
 		storageBufferDescriptorPoolSize,
 		storageImageDescriptorPoolSize,
-		samplerDescriptorPoolSize
+		combinedImageSamplerDescriptorPoolSize
 	};
 
 	VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {0};
@@ -1176,8 +1169,7 @@ static VkDescriptorType TRM_Renderer_Backend_convertDescriptorType(enum TRM_Rend
 	case TRM_RENDERER_DESCRIPTOR_TYPE_UNIFORM_BUFFER: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	case TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_BUFFER: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	case TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	case TRM_RENDERER_DESCRIPTOR_TYPE_SAMPLED_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-	case TRM_RENDERER_DESCRIPTOR_TYPE_SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
+	case TRM_RENDERER_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	default: exit(EXIT_FAILURE);
 	}
 }
@@ -1236,8 +1228,8 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->info.draw.pass = pPassInstance->info.draw.pass;
 			pBackendPassInstance->info.draw.vertexCount = pPassInstance->info.draw.vertexCount;
 			pBackendPassInstance->info.draw.clearValues[0].color.float32[0] = 0.3f;
-			pBackendPassInstance->info.draw.clearValues[0].color.float32[1] = 0.0f;
-			pBackendPassInstance->info.draw.clearValues[0].color.float32[2] = 0.0f;
+			pBackendPassInstance->info.draw.clearValues[0].color.float32[1] = 0.3f;
+			pBackendPassInstance->info.draw.clearValues[0].color.float32[2] = 0.6f;
 			pBackendPassInstance->info.draw.clearValues[0].color.float32[3] = 1.0f;
 
 			pBackendPassInstance->info.draw.clearValues[1].depthStencil.depth = 1.0f;
@@ -1485,7 +1477,7 @@ static void TRM_Renderer_Backend_createPassInstances(
 						layout = 
 							pPass->info.dispatch.pDescriptorInfos[bindingIndex].descriptorType == TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 								VK_IMAGE_LAYOUT_GENERAL : 
-								VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+								VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 						TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 					}
 					pResourceState->stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
@@ -1510,7 +1502,7 @@ static void TRM_Renderer_Backend_createPassInstances(
 					{
 						layout = pPass->info.draw.pDescriptorInfos[bindingIndex].descriptorType == TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 								VK_IMAGE_LAYOUT_GENERAL : 
-								VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+								VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 						TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 					}
 					pResourceState->stage |= (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
@@ -1597,7 +1589,7 @@ static void TRM_Renderer_Backend_updateDescriptorSets(uint32_t passInstanceCount
 					pWrites[bindingIndex].pTexelBufferView = NULL;
 
 				}
-				else if(descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
+				else if(descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 				{
 					pImageInfos[bindingIndex].imageLayout = pResourceState->layout;
 					pImageInfos[bindingIndex].imageView = pResource->info.image.imageView;
@@ -1606,14 +1598,14 @@ static void TRM_Renderer_Backend_updateDescriptorSets(uint32_t passInstanceCount
 					pWrites[bindingIndex].pBufferInfo = NULL;
 					pWrites[bindingIndex].pImageInfo = &pImageInfos[bindingIndex];
 				}
-				else if(descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER)
+				else if(descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 				{
-					pImageInfos[bindingIndex].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-					pImageInfos[bindingIndex].imageView = VK_NULL_HANDLE;
-					pImageInfos[bindingIndex].sampler = pResource->info.sampler.sampler;
+					pImageInfos[bindingIndex].imageLayout = pResourceState->layout;
+					pImageInfos[bindingIndex].imageView = pResource->info.image.imageView;
+					pImageInfos[bindingIndex].sampler = pState->globalSampler;
 
 					pWrites[bindingIndex].pBufferInfo = NULL;
-					pWrites[bindingIndex].pImageInfo = NULL;
+					pWrites[bindingIndex].pImageInfo = &pImageInfos[bindingIndex];
 				}
 				else
 				{
@@ -1896,7 +1888,7 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 			bufferImageCopy.imageSubresource.mipLevel = 0;
 			bufferImageCopy.imageOffset.x = 0;
 			bufferImageCopy.imageOffset.y = 0;
-			bufferImageCopy.imageOffset.z = 1;
+			bufferImageCopy.imageOffset.z = 0;
 			bufferImageCopy.imageExtent.width = pPassInstance->info.bufferToImageCopy.width;
 			bufferImageCopy.imageExtent.height = pPassInstance->info.bufferToImageCopy.height;
 			bufferImageCopy.imageExtent.depth = 1;
@@ -1946,8 +1938,8 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 			blit.srcOffsets[0].x = 0;
 			blit.srcOffsets[0].y = 0;
 			blit.srcOffsets[0].z = 0;
-			blit.srcOffsets[1].x = pPassInstances[passInstanceIndex].info.blit.width;
-			blit.srcOffsets[1].y = pPassInstances[passInstanceIndex].info.blit.height;
+			blit.srcOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.width;
+			blit.srcOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.height;
 			blit.srcOffsets[1].z = 1;
 			blit.dstSubresource.aspectMask = pOutputResource->info.image.aspect;
 			blit.dstSubresource.baseArrayLayer = 0;
@@ -1956,8 +1948,8 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 			blit.dstOffsets[0].x = 0;
 			blit.dstOffsets[0].y = 0;
 			blit.dstOffsets[0].z = 0;
-			blit.dstOffsets[1].x = pPassInstances[passInstanceIndex].info.blit.width;
-			blit.dstOffsets[1].y = pPassInstances[passInstanceIndex].info.blit.height;
+			blit.dstOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.width;
+			blit.dstOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.height;
 			blit.dstOffsets[1].z = 1;
 			
 			vkCmdBlitImage(
@@ -2021,6 +2013,8 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 
 	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Resource), TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT, &pState->resources);
 	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Pass), TRM_RENDERER_BACKEND_MAX_PASS_COUNT, &pState->passes);
+
+	TRM_Renderer_Backend_createSampler(pState->pAllocator, pState->device, &pState->globalSampler);
 
 	VkImage* pSwapchainImages = NULL;
 	vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, NULL);
@@ -2114,6 +2108,8 @@ void TRM_Renderer_terminate(void)
 
 		TRM_Memory_deallocate(pState->pSwapchainImageInfos);
 		
+		vkDestroySampler(pState->device, pState->globalSampler, pState->pAllocator);
+
 		TRM_Arena_destroy(&pState->resources);
 		TRM_Arena_destroy(&pState->passes);
 		
@@ -2450,30 +2446,14 @@ void TRM_Renderer_destroyResource(uint32_t handle)
 			TRM_Arena_remove(pResource->info.bufferIndirection.info.deviceLocal.buffer, &pState->resources);
 		}
 	}
-	else if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE)
+	else
 	{
 		vkDestroyImage(pState->device, pResource->info.image.image, pState->pAllocator);
 		vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
 		vkFreeMemory(pState->device, pResource->info.image.memory, pState->pAllocator);
 	}
-	else
-	{
-		vkDestroySampler(pState->device, pResource->info.sampler.sampler, pState->pAllocator);
-	}
 	
 	TRM_Arena_remove(handle, &pState->resources);
-}
-
-void TRM_Renderer_createSampler(uint32_t* pHandle)
-{
-	struct TRM_Renderer_Backend_Resource resource = {0};
-	resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_SAMPLER;
-	resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-	resource.state.access = VK_ACCESS_NONE;
-	
-	TRM_Renderer_Backend_createSampler(pState->pAllocator, pState->device, &resource.info.sampler.sampler);
-
-	TRM_Arena_add((void*)&resource, &pState->resources, pHandle);
 }
 
 void TRM_Renderer_writeBuffer(uint32_t sizeInBytes, const void* pData, uint32_t handle)
