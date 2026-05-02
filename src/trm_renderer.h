@@ -61,6 +61,7 @@ enum TRM_Renderer_PassType
 	TRM_RENDERER_PASS_TYPE_IMAGE_TO_IMAGE_COPY,
 	TRM_RENDERER_PASS_TYPE_BUFFER_TO_IMAGE_COPY,
 	TRM_RENDERER_PASS_TYPE_BUFFER_TO_BUFFER_COPY,
+	TRM_RENDERER_PASS_TYPE_BLIT,
 	TRM_RENDERER_PASS_TYPE_PRESENT
 };
 
@@ -142,6 +143,14 @@ struct TRM_Renderer_CopyBufferToBufferPassInstanceInfo
 	uint32_t sizeInBytes;
 };
 
+struct TRM_Renderer_BlitPassInstanceInfo
+{
+	uint32_t srcImage;
+	uint32_t dstImage;
+	uint32_t width;
+	uint32_t height;
+};
+
 struct TRM_Renderer_PassInstance
 {
 	enum TRM_Renderer_PassType type;
@@ -152,6 +161,7 @@ struct TRM_Renderer_PassInstance
 		struct TRM_Renderer_CopyImageToImagePassInstanceInfo imageToImageCopy;
 		struct TRM_Renderer_CopyBufferToImagePassInstanceInfo bufferToImageCopy;
 		struct TRM_Renderer_CopyBufferToBufferPassInstanceInfo bufferToBufferCopy;
+		struct TRM_Renderer_BlitPassInstanceInfo blit;
 	} info;
 };
 

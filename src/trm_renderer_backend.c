@@ -160,6 +160,13 @@ struct TRM_Renderer_Backend_BufferToBufferPassInstanceInfo
 	uint32_t sizeInBytes;
 };
 
+struct TRM_Renderer_Backend_BlitPassInstanceInfo
+{
+	uint32_t width;
+	uint32_t height;
+};
+
+
 struct TRM_Renderer_Backend_PassInstance
 {
 	enum TRM_Renderer_PassType type;
@@ -173,6 +180,7 @@ struct TRM_Renderer_Backend_PassInstance
 		struct TRM_Renderer_Backend_ImageToImagePassInstanceInfo imageToImageCopy;
 		struct TRM_Renderer_Backend_BufferToImagePassInstanceInfo bufferToImageCopy;
 		struct TRM_Renderer_Backend_BufferToBufferPassInstanceInfo bufferToBufferCopy;
+		struct TRM_Renderer_Backend_BlitPassInstanceInfo blit;
 	} info;
 };
 
@@ -1131,6 +1139,7 @@ static uint32_t TRM_Renderer_Backend_translateResource(uint32_t resource, uint32
 	return resource;
 }
 
+// i'm not sure it covers all the cases, but we should be good for now
 static void TRM_Renderer_Backend_mergeLayouts(VkImageLayout a, VkImageLayout b, VkImageLayout* pResult)
 {
 	if(a == b)
@@ -1276,6 +1285,20 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->info.bufferToBufferCopy.sizeInBytes = pPassInstance->info.bufferToBufferCopy.sizeInBytes;
 			break;
 		}
+		case TRM_RENDERER_PASS_TYPE_BLIT:
+		{
+			pBackendPassInstance->bindingCount = 2;
+			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
+
+			pBackendPassInstance->pBindings[0] =
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.srcImage, swapchainImageIndex);
+			pBackendPassInstance->pBindings[1] =
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.dstImage, swapchainImageIndex);
+
+			pBackendPassInstance->info.blit.width = pPassInstance->info.blit.width;
+			pBackendPassInstance->info.blit.height = pPassInstance->info.blit.height;
+			break;
+		}
 		case TRM_RENDERER_PASS_TYPE_PRESENT:
 		{
 			pBackendPassInstance->bindingCount = 1;
@@ -1396,6 +1419,25 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pResourceState = &pBackendPassInstance->pResourceStates[dstBuffer];
 			pResourceState->access |= VK_ACCESS_TRANSFER_WRITE_BIT;
 			pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+			break;
+		}
+		case TRM_RENDERER_PASS_TYPE_BLIT:
+		{
+			uint32_t srcImage = pBackendPassInstance->pBindings[0];
+			uint32_t dstImage = pBackendPassInstance->pBindings[1];
+
+			VkImageLayout layout;
+			struct TRM_Renderer_Backend_ResourceState* pResourceState = &pBackendPassInstance->pResourceStates[srcImage];
+			pResourceState->access |= VK_ACCESS_TRANSFER_READ_BIT;
+			pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+			layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+
+			pResourceState = &pBackendPassInstance->pResourceStates[dstImage];
+			pResourceState->access |= VK_ACCESS_TRANSFER_WRITE_BIT;
+			pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+			layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 			break;
 		}
 		case TRM_RENDERER_PASS_TYPE_PRESENT:
@@ -1887,6 +1929,46 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 				pOutputResource->info.buffer.buffer, 
 				1, 
 				&bufferCopy);
+		}
+		else if(pPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_BLIT)
+		{
+			struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
+			TRM_Arena_get(pPassInstance->pBindings[0], pState->resources, (void**)&pInputResource);
+
+			struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
+			TRM_Arena_get(pPassInstance->pBindings[1], pState->resources, (void**)&pOutputResource);
+
+			VkImageBlit blit = {0};
+			blit.srcSubresource.aspectMask = pInputResource->info.image.aspect;
+			blit.srcSubresource.baseArrayLayer = 0;
+			blit.srcSubresource.layerCount = 1;
+			blit.srcSubresource.mipLevel = 0;
+			blit.srcOffsets[0].x = 0;
+			blit.srcOffsets[0].y = 0;
+			blit.srcOffsets[0].z = 0;
+			blit.srcOffsets[1].x = pPassInstances[passInstanceIndex].info.blit.width;
+			blit.srcOffsets[1].y = pPassInstances[passInstanceIndex].info.blit.height;
+			blit.srcOffsets[1].z = 1;
+			blit.dstSubresource.aspectMask = pOutputResource->info.image.aspect;
+			blit.dstSubresource.baseArrayLayer = 0;
+			blit.dstSubresource.layerCount = 1;
+			blit.dstSubresource.mipLevel = 0;
+			blit.dstOffsets[0].x = 0;
+			blit.dstOffsets[0].y = 0;
+			blit.dstOffsets[0].z = 0;
+			blit.dstOffsets[1].x = pPassInstances[passInstanceIndex].info.blit.width;
+			blit.dstOffsets[1].y = pPassInstances[passInstanceIndex].info.blit.height;
+			blit.dstOffsets[1].z = 1;
+			
+			vkCmdBlitImage(
+				commandBuffer, 
+				pInputResource->info.image.image, 
+				pInputResource->state.layout, 
+				pOutputResource->info.image.image, 
+				pOutputResource->state.layout, 
+				1, 
+				&blit, 
+				VK_FILTER_LINEAR);
 		}
 	}
 
@@ -2634,5 +2716,3 @@ void TRM_Renderer_destroyPass(uint32_t handle)
 		TRM_Memory_deallocate(pPass->info.draw.pDescriptorInfos);
 	}
 }
-
-

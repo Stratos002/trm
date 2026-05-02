@@ -65,7 +65,7 @@ int main(void)
 	uint32_t vertexBuffer = 0;
 	uint32_t uniformBuffer = 0;
 
-	VkFormat colorImageFormat = TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT;
+	VkFormat colorImageFormat = VK_FORMAT_R8G8B8A8_UNORM;
 	VkFormat depthImageFormat = VK_FORMAT_D32_SFLOAT;
 	
 	uint32_t drawPass = 0;
@@ -212,11 +212,11 @@ int main(void)
 
 		
 		{
-			passInstances[2].type = TRM_RENDERER_PASS_TYPE_IMAGE_TO_IMAGE_COPY;
-			passInstances[2].info.imageToImageCopy.srcImage = colorImage;
-			passInstances[2].info.imageToImageCopy.dstImage = TRM_RENDERER_SWAPCHAIN_IMAGE;
-			passInstances[2].info.imageToImageCopy.width = TRM_WINDOW_WIDTH;
-			passInstances[2].info.imageToImageCopy.height = TRM_WINDOW_HEIGHT;
+			passInstances[2].type = TRM_RENDERER_PASS_TYPE_BLIT;
+			passInstances[2].info.blit.srcImage = colorImage;
+			passInstances[2].info.blit.dstImage = TRM_RENDERER_SWAPCHAIN_IMAGE;
+			passInstances[2].info.blit.width = TRM_WINDOW_WIDTH;
+			passInstances[2].info.blit.height = TRM_WINDOW_HEIGHT;
 		}
 
 		{
