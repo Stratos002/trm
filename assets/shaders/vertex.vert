@@ -11,5 +11,5 @@ layout(set = 0, binding = 0) uniform UniformBuffer
 void main()
 {
 	gl_Position = uniformBuffer.projection * uniformBuffer.transformation * vec4(inPosition, 1.0);
-	fragColor = vec3(0.0, 1.0, 0.0);
+	fragColor = gl_Position.rgb;
 }
