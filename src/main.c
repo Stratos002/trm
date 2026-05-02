@@ -8,8 +8,8 @@
 #include "trm_renderer.h"
 #include "trm_maths.h"
 
-#define TRM_WINDOW_WIDTH 1000
-#define TRM_WINDOW_HEIGHT 1000
+#define TRM_WINDOW_WIDTH 500
+#define TRM_WINDOW_HEIGHT 500
 
 struct UniformBuffer
 {
@@ -65,7 +65,7 @@ int main(void)
 	uint32_t vertexBuffer = 0;
 	uint32_t uniformBuffer = 0;
 
-	VkFormat colorImageFormat = VK_FORMAT_R8G8B8A8_UNORM;
+	VkFormat colorImageFormat = TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT;
 	VkFormat depthImageFormat = VK_FORMAT_D32_SFLOAT;
 	
 	uint32_t drawPass = 0;
@@ -189,31 +189,25 @@ int main(void)
 
 		struct TRM_Renderer_PassInstance passInstances[4];
 
-		{
-			uint32_t binding = uniformBuffer;
-
+		{	
 			passInstances[0].type = TRM_RENDERER_PASS_TYPE_DRAW;
 			passInstances[0].info.draw.pass = drawPass;
-			passInstances[0].info.draw.bindingCount = 1;
-			passInstances[0].info.draw.pBindings = &binding;
 			passInstances[0].info.draw.vertexCount = 3;
 			passInstances[0].info.draw.vertexBuffer = vertexBuffer;
 			passInstances[0].info.draw.colorImage = colorImage;
 			passInstances[0].info.draw.depthImage = depthImage;
 			passInstances[0].info.draw.bindingCount = 1;
-			passInstances[0].info.draw.pBindings = &binding;
+			passInstances[0].info.draw.pBindings = &uniformBuffer;
 		}
 		
 		{
-			uint32_t binding = colorImage;
-
 			passInstances[1].type = TRM_RENDERER_PASS_TYPE_DISPATCH;
 			passInstances[1].info.dispatch.pass = computePass;
 			passInstances[1].info.dispatch.groupCountX = (TRM_WINDOW_WIDTH + 8 - 1) / 8;
 			passInstances[1].info.dispatch.groupCountY = (TRM_WINDOW_HEIGHT + 8 - 1) / 8;
 			passInstances[1].info.dispatch.groupCountZ = 1;
 			passInstances[1].info.dispatch.bindingCount = 1;
-			passInstances[1].info.dispatch.pBindings = &binding;
+			passInstances[1].info.dispatch.pBindings = &colorImage;
 		}
 
 		
