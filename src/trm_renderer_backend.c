@@ -1141,6 +1141,16 @@ static uint32_t TRM_Renderer_Backend_translateResource(uint32_t resource, uint32
 	return resource;
 }
 
+static VkFormat TRM_Renderer_Backend_translateFormat(VkFormat format)
+{
+	if(format == TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT)
+	{
+		return pState->swapchainFormat;
+	}
+
+	return format;
+}
+
 // i'm not sure it covers all the cases, but we should be good for now
 static void TRM_Renderer_Backend_mergeLayouts(VkImageLayout a, VkImageLayout b, VkImageLayout* pResult)
 {
@@ -2383,19 +2393,13 @@ void TRM_Renderer_createImage(struct TRM_Renderer_ImageCreateInfo info, uint32_t
 	resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 	resource.state.access = VK_ACCESS_NONE;
 	resource.state.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-	
-	VkFormat format = info.format;
-	if(info.format == TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT)
-	{
-		format = pState->swapchainFormat;
-	}
 
 	TRM_Renderer_Backend_createImage(
 		pState->pAllocator,
 		pState->device,
 		info.width,
 		info.height,
-		format,
+		TRM_Renderer_Backend_translateFormat(info.format),
 		resource.state.layout,
 		imageUsage,
 		pState->queueFamilyIndex,
@@ -2415,7 +2419,7 @@ void TRM_Renderer_createImage(struct TRM_Renderer_ImageCreateInfo info, uint32_t
 		pState->pAllocator,
 		pState->device,
 		resource.info.image.image,
-		format,
+		TRM_Renderer_Backend_translateFormat(info.format),
 		resource.info.image.aspect,
 		&resource.info.image.imageView);
 
@@ -2616,7 +2620,7 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < info.colorOutputImageCount; ++colorOutputImageIndex)
 	{
 		pAttachmentDescriptions[colorOutputImageIndex].flags = 0;
-		pAttachmentDescriptions[colorOutputImageIndex].format = info.pColorOutputImageFormats[colorOutputImageIndex];
+		pAttachmentDescriptions[colorOutputImageIndex].format = TRM_Renderer_Backend_translateFormat(info.pColorOutputImageFormats[colorOutputImageIndex]);
 		pAttachmentDescriptions[colorOutputImageIndex].samples = VK_SAMPLE_COUNT_1_BIT;
 		pAttachmentDescriptions[colorOutputImageIndex].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 		pAttachmentDescriptions[colorOutputImageIndex].storeOp = VK_ATTACHMENT_STORE_OP_STORE;

@@ -11,8 +11,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-#define TRM_WINDOW_WIDTH 1000
-#define TRM_WINDOW_HEIGHT 1000
+#define TRM_WINDOW_WIDTH 500
+#define TRM_WINDOW_HEIGHT 500
 
 struct UniformBuffer
 {
@@ -84,7 +84,7 @@ int main(void)
 
 	uint32_t colorImage = 0;
 	uint32_t depthImage = 0;
-	uint32_t vertexBuffer = 0;
+	uint32_t vertexBuffer = 0; 
 	uint32_t uniformBuffer = 0;
 	uint32_t texture = 0;
 	uint32_t bufferUpload = 0;
@@ -168,8 +168,6 @@ int main(void)
 		vertexAttributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
 		vertexAttributeDescriptions[0].offset = 0;
 
-		VkFormat colorOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
-
 		struct TRM_Renderer_DrawPassCreateInfo drawPassCreateInfo = {0};
 		drawPassCreateInfo.vertexCodeSize = vertexCodeSize;
 		drawPassCreateInfo.pVertexCode = pVertexCode;
@@ -178,7 +176,7 @@ int main(void)
 		drawPassCreateInfo.width = TRM_WINDOW_WIDTH;
 		drawPassCreateInfo.height = TRM_WINDOW_HEIGHT;
 		drawPassCreateInfo.colorOutputImageCount = 1;
-		drawPassCreateInfo.pColorOutputImageFormats = &colorOutputFormat;
+		drawPassCreateInfo.pColorOutputImageFormats = &colorImageFormat;
 		drawPassCreateInfo.vertexStride = sizeof(struct Vertex);
 		drawPassCreateInfo.vertexAttributeDescriptionCount = sizeof(vertexAttributeDescriptions) / sizeof(vertexAttributeDescriptions[0]);
 		drawPassCreateInfo.pVertexAttributeDescriptions = vertexAttributeDescriptions;
