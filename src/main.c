@@ -266,6 +266,8 @@ int main(void)
 		{
 			passInstances[1].type = TRM_RENDERER_PASS_TYPE_DRAW;
 			passInstances[1].info.draw.pass = drawPass;
+			passInstances[1].info.draw.width = TRM_WINDOW_WIDTH;
+			passInstances[1].info.draw.height = TRM_WINDOW_HEIGHT;
 			passInstances[1].info.draw.vertexCount = 3;
 			passInstances[1].info.draw.vertexBuffer = vertexBuffer;
 			passInstances[1].info.draw.colorOutputImageCount = 1;
@@ -290,15 +292,20 @@ int main(void)
 			passInstances[3].type = TRM_RENDERER_PASS_TYPE_BLIT;
 			passInstances[3].info.blit.srcImage = colorImage;
 			passInstances[3].info.blit.dstImage = TRM_RENDERER_SWAPCHAIN_IMAGE;
-			passInstances[3].info.blit.width = TRM_WINDOW_WIDTH;
-			passInstances[3].info.blit.height = TRM_WINDOW_HEIGHT;
+			passInstances[3].info.blit.srcWidth = TRM_WINDOW_WIDTH;
+			passInstances[3].info.blit.srcHeight = TRM_WINDOW_HEIGHT;
+			passInstances[3].info.blit.dstWidth = TRM_RENDERER_SWAPCHAIN_WIDTH;
+			passInstances[3].info.blit.dstHeight = TRM_RENDERER_SWAPCHAIN_HEIGHT;
 		}
 
 		{
 			passInstances[4].type = TRM_RENDERER_PASS_TYPE_PRESENT;
 		}
 
-		TRM_Renderer_endFrame(sizeof(passInstances) / sizeof(passInstances[0]), passInstances);
+		uint32_t windowWidth = 0;
+		uint32_t windowHeight = 0;
+		glfwGetFramebufferSize(pWindow, (int*)&windowWidth, (int*)&windowHeight);
+		TRM_Renderer_endFrame(sizeof(passInstances) / sizeof(passInstances[0]), passInstances, windowWidth, windowHeight);
 	}
 
 	TRM_Renderer_destroyPass(drawPass);

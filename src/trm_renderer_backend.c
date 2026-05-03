@@ -98,8 +98,6 @@ struct TRM_Renderer_Backend_DispatchPass
 
 struct TRM_Renderer_Backend_DrawPass
 {
-	uint32_t width;
-	uint32_t height;
 	VkDescriptorSetLayout descriptorSetLayout;
 	VkPipelineLayout pipelineLayout;
 	VkPipeline pipeline;
@@ -129,6 +127,8 @@ struct TRM_Renderer_Backend_DispatchPassInstanceInfo
 
 struct TRM_Renderer_Backend_drawPassInstanceInfo
 {
+	uint32_t width;
+	uint32_t height;
 	uint32_t pass;
 	uint32_t descriptorSet;
 	uint32_t framebuffer;
@@ -156,8 +156,10 @@ struct TRM_Renderer_Backend_BufferToBufferPassInstanceInfo
 
 struct TRM_Renderer_Backend_BlitPassInstanceInfo
 {
-	uint32_t width;
-	uint32_t height;
+	uint32_t srcWidth;
+	uint32_t srcHeight;
+	uint32_t dstWidth;
+	uint32_t dstHeight;
 };
 
 struct TRM_Renderer_Backend_PassInstance
@@ -970,8 +972,6 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	uint32_t colorAttachmentCount,
 	VkPipelineLayout pipelineLayout,
 	VkRenderPass renderPass,
-	uint32_t viewportWidth,
-	uint32_t viewportHeight,
 	VkPipeline* pGraphicsPipeline)
 {
 	VkPipelineShaderStageCreateInfo shaderStageCreateInfos[2];
@@ -998,28 +998,26 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	inputAssemblyStateCreateInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	inputAssemblyStateCreateInfo.primitiveRestartEnable = VK_FALSE;
 
-	VkViewport viewport = {0};
-	viewport.x = 0;
-	viewport.y = (float)viewportHeight;
-	viewport.width = (float)viewportWidth;
-	viewport.height = -(float)viewportHeight;
-	viewport.minDepth = 0;
-	viewport.maxDepth = 1.0f;
-
-	VkRect2D scissor = {0};
-	scissor.offset.x = 0;
-	scissor.offset.y = 0;
-	scissor.extent.width = viewportWidth;
-	scissor.extent.height = viewportHeight;
-
 	VkPipelineViewportStateCreateInfo viewportStateCreateInfo = {0};
 	viewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	viewportStateCreateInfo.pNext = NULL;
 	viewportStateCreateInfo.flags = 0;
 	viewportStateCreateInfo.viewportCount = 1;
-	viewportStateCreateInfo.pViewports = &viewport;
+	viewportStateCreateInfo.pViewports = NULL; // dynamic
 	viewportStateCreateInfo.scissorCount = 1;
-	viewportStateCreateInfo.pScissors = &scissor;
+	viewportStateCreateInfo.pScissors = NULL; // dynamic
+
+	VkDynamicState dynamicStates[2] = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamicStateCreateInfo = {0};
+	dynamicStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicStateCreateInfo.pNext = NULL;
+	dynamicStateCreateInfo.flags = 0;
+	dynamicStateCreateInfo.dynamicStateCount = 2;
+	dynamicStateCreateInfo.pDynamicStates = dynamicStates;
 
 	VkPipelineRasterizationStateCreateInfo rasterizationStateCreateInfo = {0};
 	rasterizationStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -1105,7 +1103,7 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	graphicsPipelineCreateInfo.pMultisampleState = &multisampleStateCreateInfo;
 	graphicsPipelineCreateInfo.pDepthStencilState = &depthStencilStateCreateInfo;
 	graphicsPipelineCreateInfo.pColorBlendState = &colorBlendStateInfo;
-	graphicsPipelineCreateInfo.pDynamicState = NULL;
+	graphicsPipelineCreateInfo.pDynamicState = &dynamicStateCreateInfo;
 	graphicsPipelineCreateInfo.layout = pipelineLayout;
 	graphicsPipelineCreateInfo.renderPass = renderPass;
 	graphicsPipelineCreateInfo.subpass = 0;
@@ -1149,6 +1147,26 @@ static VkFormat TRM_Renderer_Backend_translateFormat(VkFormat format)
 	}
 
 	return format;
+}
+
+static VkFormat TRM_Renderer_Backend_translateWidth(uint32_t width)
+{
+	if(width == TRM_RENDERER_SWAPCHAIN_WIDTH)
+	{
+		return pState->swapchainWidth;
+	}
+
+	return width;
+}
+
+static VkFormat TRM_Renderer_Backend_translateHeight(uint32_t height)
+{
+	if(height == TRM_RENDERER_SWAPCHAIN_HEIGHT)
+	{
+		return pState->swapchainHeight;
+	}
+
+	return height;
 }
 
 // i'm not sure it covers all the cases, but we should be good for now
@@ -1228,7 +1246,7 @@ static void TRM_Renderer_Backend_createPassInstances(
 			}
 
 			pBackendPassInstance->info.dispatch.pass = pPassInstance->info.dispatch.pass;
-			pBackendPassInstance->info.dispatch.groupCountX = pPassInstance->info.dispatch.groupCountX;
+			pBackendPassInstance->info.dispatch.groupCountX = pPassInstance->info.dispatch.groupCountX; // what if we want to dispatch on a swapchain image sized buffer ?
 			pBackendPassInstance->info.dispatch.groupCountY = pPassInstance->info.dispatch.groupCountY;
 			pBackendPassInstance->info.dispatch.groupCountZ = pPassInstance->info.dispatch.groupCountZ;
 
@@ -1294,7 +1312,9 @@ static void TRM_Renderer_Backend_createPassInstances(
 					TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.pBindings[additionalBindingIndex], swapchainImageIndex);
 			}
 
-			pBackendPassInstance->info.draw.pass = pPassInstance->info.draw.pass;
+			pBackendPassInstance->info.draw.pass = pPassInstance->info.draw.pass; // translate
+			pBackendPassInstance->info.draw.width = TRM_Renderer_Backend_translateWidth(pPassInstance->info.draw.width);
+			pBackendPassInstance->info.draw.height = TRM_Renderer_Backend_translateHeight(pPassInstance->info.draw.height);
 			pBackendPassInstance->info.draw.vertexCount = pPassInstance->info.draw.vertexCount;
 			pBackendPassInstance->info.draw.clearColorCount = pPassInstance->info.draw.colorOutputImageCount + 1;
 			
@@ -1382,8 +1402,8 @@ static void TRM_Renderer_Backend_createPassInstances(
 				pPass->info.draw.renderPass,
 				pPassInstance->info.draw.colorOutputImageCount + 1,
 				pAttachments,
-				pPass->info.draw.width,
-				pPass->info.draw.height,
+				pBackendPassInstance->info.draw.width,
+				pBackendPassInstance->info.draw.height,
 				&pState->pFrameInfos[pState->frameIndex].framebuffers[pState->pFrameInfos[pState->frameIndex].framebufferCount]);
 
 			TRM_Memory_deallocate(pAttachments);
@@ -1403,8 +1423,8 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->pBindings[1] = 
 				TRM_Renderer_Backend_translateResource(pPassInstance->info.imageToImageCopy.dstImage, swapchainImageIndex);
 
-			pBackendPassInstance->info.imageToImageCopy.width = pPassInstance->info.imageToImageCopy.width;
-			pBackendPassInstance->info.imageToImageCopy.height = pPassInstance->info.imageToImageCopy.height;
+			pBackendPassInstance->info.imageToImageCopy.width = TRM_Renderer_Backend_translateWidth(pPassInstance->info.imageToImageCopy.width);
+			pBackendPassInstance->info.imageToImageCopy.height = TRM_Renderer_Backend_translateHeight(pPassInstance->info.imageToImageCopy.height);
 
 			uint32_t srcImage = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
@@ -1433,8 +1453,8 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->pBindings[1] = 
 				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToImageCopy.dstImage, swapchainImageIndex);
 
-			pBackendPassInstance->info.bufferToImageCopy.width = pPassInstance->info.bufferToImageCopy.width;
-			pBackendPassInstance->info.bufferToImageCopy.height = pPassInstance->info.bufferToImageCopy.height;
+			pBackendPassInstance->info.bufferToImageCopy.width = TRM_Renderer_Backend_translateWidth(pPassInstance->info.bufferToImageCopy.width);
+			pBackendPassInstance->info.bufferToImageCopy.height = TRM_Renderer_Backend_translateHeight(pPassInstance->info.bufferToImageCopy.height);
 
 			uint32_t srcBuffer = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
@@ -1484,8 +1504,10 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->pBindings[1] =
 				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.dstImage, swapchainImageIndex);
 
-			pBackendPassInstance->info.blit.width = pPassInstance->info.blit.width;
-			pBackendPassInstance->info.blit.height = pPassInstance->info.blit.height;
+			pBackendPassInstance->info.blit.srcWidth = TRM_Renderer_Backend_translateWidth(pPassInstance->info.blit.srcWidth);
+			pBackendPassInstance->info.blit.srcHeight = TRM_Renderer_Backend_translateHeight(pPassInstance->info.blit.srcHeight);
+			pBackendPassInstance->info.blit.dstWidth = TRM_Renderer_Backend_translateWidth(pPassInstance->info.blit.dstWidth);
+			pBackendPassInstance->info.blit.dstHeight = TRM_Renderer_Backend_translateHeight(pPassInstance->info.blit.dstHeight);
 
 			uint32_t srcImage = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
@@ -1817,8 +1839,8 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 			renderPassBeginInfo.framebuffer = pState->pFrameInfos[pState->frameIndex].framebuffers[pPassInstance->info.draw.framebuffer];
 			renderPassBeginInfo.renderArea.offset.x = 0;
 			renderPassBeginInfo.renderArea.offset.y = 0;
-			renderPassBeginInfo.renderArea.extent.width = pPass->info.draw.width;
-			renderPassBeginInfo.renderArea.extent.height = pPass->info.draw.height;
+			renderPassBeginInfo.renderArea.extent.width = pPassInstance->info.draw.width;
+			renderPassBeginInfo.renderArea.extent.height = pPassInstance->info.draw.height;
 			renderPassBeginInfo.clearValueCount = pPassInstance->info.draw.clearColorCount;
 			renderPassBeginInfo.pClearValues = pPassInstance->info.draw.pClearColors;
 
@@ -1842,6 +1864,23 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 				&pState->pFrameInfos[pState->frameIndex].descriptorSets[pPassInstance->info.draw.descriptorSet],
 				0,
 				NULL);
+
+			VkViewport viewport = {0};
+			viewport.x = 0;
+			viewport.y = (float)pPassInstance->info.draw.height;
+			viewport.width = (float)pPassInstance->info.draw.width;
+			viewport.height = -(float)pPassInstance->info.draw.height;
+			viewport.minDepth = 0;
+			viewport.maxDepth = 1.0f;
+			
+			VkRect2D scissor = {0};
+			scissor.offset.x = 0;
+			scissor.offset.y = 0;
+			scissor.extent.width = pPassInstance->info.draw.width;
+			scissor.extent.height = pPassInstance->info.draw.height;
+			
+			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
 			vkCmdDraw(commandBuffer, pPassInstance->info.draw.vertexCount, 1, 0, 0);
 
@@ -1951,8 +1990,8 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 			blit.srcOffsets[0].x = 0;
 			blit.srcOffsets[0].y = 0;
 			blit.srcOffsets[0].z = 0;
-			blit.srcOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.width;
-			blit.srcOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.height;
+			blit.srcOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.srcWidth;
+			blit.srcOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.srcHeight;
 			blit.srcOffsets[1].z = 1;
 			blit.dstSubresource.aspectMask = pOutputResource->info.image.aspect;
 			blit.dstSubresource.baseArrayLayer = 0;
@@ -1961,8 +2000,8 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 			blit.dstOffsets[0].x = 0;
 			blit.dstOffsets[0].y = 0;
 			blit.dstOffsets[0].z = 0;
-			blit.dstOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.width;
-			blit.dstOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.height;
+			blit.dstOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.dstWidth;
+			blit.dstOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.dstHeight;
 			blit.dstOffsets[1].z = 1;
 			
 			vkCmdBlitImage(
@@ -2010,6 +2049,9 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	TRM_Renderer_Backend_createCommandPool(pState->pAllocator, pState->device, pState->queueFamilyIndex, &pState->commandPool);
 	TRM_Renderer_Backend_createDescriptorPool(pState->pAllocator, pState->device, &pState->descriptorPool);
 
+	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Resource), TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT, &pState->resources);
+	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Pass), TRM_RENDERER_BACKEND_MAX_PASS_COUNT, &pState->passes);
+
 	TRM_Renderer_Backend_createSwapchain(
 		pState->pAllocator,
 		pState->physicalDevice,
@@ -2023,11 +2065,6 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		&pState->swapchainFormat, 
 		&pState->swapchainWidth, 
 		&pState->swapchainHeight);
-
-	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Resource), TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT, &pState->resources);
-	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Pass), TRM_RENDERER_BACKEND_MAX_PASS_COUNT, &pState->passes);
-
-	TRM_Renderer_Backend_createSampler(pState->pAllocator, pState->device, &pState->globalSampler);
 
 	VkImage* pSwapchainImages = NULL;
 	vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, NULL);
@@ -2073,6 +2110,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	TRM_Memory_deallocate(pSwapchainImages);
 
 	TRM_Memory_allocate(sizeof(struct TRM_Renderer_Backend_FrameInfo) * TRM_RENDERER_BACKEND_FRAME_COUNT, (void**)&pState->pFrameInfos);
+	TRM_Renderer_Backend_createSampler(pState->pAllocator, pState->device, &pState->globalSampler);
 
 	for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_BACKEND_FRAME_COUNT; ++frameIndex)
 	{
@@ -2145,11 +2183,6 @@ void TRM_Renderer_beginFrame(void)
 		exit(EXIT_FAILURE);
 	}
 
-	if(vkResetFences(pState->device, 1, &pState->pFrameInfos[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
-	{
-		exit(EXIT_FAILURE);
-	}
-
 	for(uint32_t framebufferIndex = 0; framebufferIndex < pState->pFrameInfos[pState->frameIndex].framebufferCount; ++framebufferIndex)
 	{
 		vkDestroyFramebuffer(pState->device, pState->pFrameInfos[pState->frameIndex].framebuffers[framebufferIndex], pState->pAllocator);
@@ -2167,16 +2200,93 @@ void TRM_Renderer_beginFrame(void)
 	}
 }
 
-void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances)
+void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances, uint32_t windowWidth, uint32_t windowHeight)
 {
 	uint32_t swapchainImageIndex = 0;
-	if(vkAcquireNextImageKHR(
+	VkResult acquireNextImageResult = vkAcquireNextImageKHR(
 		pState->device,
 		pState->swapchain,
 		UINT64_MAX,
 		pState->pFrameInfos[pState->frameIndex].imageAvailableSemaphore,
 		VK_NULL_HANDLE,
-		&swapchainImageIndex) != VK_SUCCESS)
+		&swapchainImageIndex);
+
+	if(acquireNextImageResult == VK_ERROR_OUT_OF_DATE_KHR || acquireNextImageResult == VK_SUBOPTIMAL_KHR)
+	{
+		vkDeviceWaitIdle(pState->device);
+		for(uint32_t i = 0; i < pState->swapchainImageCount; ++i)
+		{
+			struct TRM_Renderer_Backend_Resource* pResource = NULL;
+			TRM_Arena_get(pState->pSwapchainImageInfos[i].colorImage, pState->resources, (void**)&pResource);
+
+			vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
+			vkDestroySemaphore(pState->device, pState->pSwapchainImageInfos[i].imageRenderedSemaphore, pState->pAllocator);
+		}
+		
+		vkDestroySwapchainKHR(pState->device, pState->swapchain, pState->pAllocator);
+
+		TRM_Memory_deallocate(pState->pSwapchainImageInfos);
+
+		TRM_Renderer_Backend_createSwapchain(
+			pState->pAllocator,
+			pState->physicalDevice,
+			pState->device,
+			pState->surface,
+			windowWidth,
+			windowHeight,
+			false,
+			pState->queueFamilyIndex,
+			&pState->swapchain,
+			&pState->swapchainFormat,
+			&pState->swapchainWidth,
+			&pState->swapchainHeight);
+
+		VkImage* pSwapchainImages = NULL;
+		vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, NULL);
+		TRM_Memory_allocate(sizeof(VkImage) * pState->swapchainImageCount, (void**)&pSwapchainImages);
+		vkGetSwapchainImagesKHR(pState->device, pState->swapchain, &pState->swapchainImageCount, pSwapchainImages);
+
+		TRM_Memory_allocate(
+			sizeof(struct TRM_Renderer_Backend_SwapchainImageInfo) * pState->swapchainImageCount,
+			(void**)&pState->pSwapchainImageInfos);
+
+		for(uint32_t i = 0; i < pState->swapchainImageCount; ++i)
+		{
+			struct TRM_Renderer_Backend_Resource swapchainColorImage = {0};
+			swapchainColorImage.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE;
+			swapchainColorImage.info.image.image = pSwapchainImages[i];
+
+			TRM_Renderer_Backend_createImageView(
+				pState->pAllocator,
+				pState->device,
+				pSwapchainImages[i],
+				pState->swapchainFormat,
+				VK_IMAGE_ASPECT_COLOR_BIT,
+				&swapchainColorImage.info.image.imageView);
+
+			swapchainColorImage.info.image.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+			swapchainColorImage.info.image.memory = VK_NULL_HANDLE;
+			swapchainColorImage.info.image.swapchainImage = true;
+			swapchainColorImage.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+			swapchainColorImage.state.access = VK_ACCESS_NONE;
+			swapchainColorImage.state.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+			TRM_Arena_add(
+				(void*)&swapchainColorImage,
+				&pState->resources,
+				&pState->pSwapchainImageInfos[i].colorImage);
+
+			TRM_Renderer_Backend_createSemaphore(
+				pState->pAllocator,
+				pState->device,
+				&pState->pSwapchainImageInfos[i].imageRenderedSemaphore);
+		}
+
+		TRM_Memory_deallocate(pSwapchainImages);
+
+		return;
+	}
+	else if(acquireNextImageResult != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -2216,6 +2326,11 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = &pState->pSwapchainImageInfos[swapchainImageIndex].imageRenderedSemaphore;
 
+	if(vkResetFences(pState->device, 1, &pState->pFrameInfos[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+
 	if(vkQueueSubmit(pState->queue, 1, &submitInfo, pState->pFrameInfos[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
 	{
 		exit(EXIT_FAILURE);
@@ -2230,8 +2345,9 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 	presentInfo.pSwapchains = &pState->swapchain;
 	presentInfo.pImageIndices = &swapchainImageIndex;
 	presentInfo.pResults = NULL;
-
-	if(vkQueuePresentKHR(pState->queue, &presentInfo) != VK_SUCCESS)
+	
+	VkResult presentResult = vkQueuePresentKHR(pState->queue, &presentInfo);
+	if(presentResult != VK_SUCCESS && presentResult != VK_ERROR_OUT_OF_DATE_KHR && presentResult != VK_SUBOPTIMAL_KHR)
 	{
 		exit(EXIT_FAILURE);
 	}
@@ -2552,9 +2668,6 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 		info.pDescriptorInfos, 
 		pass.info.draw.pDescriptorInfos);
 
-	pass.info.draw.width = info.width;
-	pass.info.draw.height = info.height;
-
 	VkDescriptorSetLayoutBinding* pBindings = NULL;
 	TRM_Memory_allocate(sizeof(VkDescriptorSetLayoutBinding) * info.descriptorInfoCount, (void**)&pBindings);
 	for(uint32_t descriptorInfoIndex = 0; descriptorInfoIndex < info.descriptorInfoCount; ++descriptorInfoIndex)
@@ -2682,8 +2795,6 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 		info.colorOutputImageCount,
 		pass.info.draw.pipelineLayout,
 		pass.info.draw.renderPass,
-		pass.info.draw.width,
-		pass.info.draw.height,
 		&pass.info.draw.pipeline);
 
 	vkDestroyShaderModule(pState->device, vertexShaderModule, pState->pAllocator);

@@ -10,6 +10,8 @@
 
 #define TRM_RENDERER_SWAPCHAIN_IMAGE UINT32_MAX
 #define TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT UINT32_MAX
+#define TRM_RENDERER_SWAPCHAIN_WIDTH UINT32_MAX
+#define TRM_RENDERER_SWAPCHAIN_HEIGHT UINT32_MAX
 
 enum TRM_Renderer_BufferUsage
 {
@@ -127,6 +129,8 @@ struct TRM_Renderer_ClearColor
 struct TRM_Renderer_DrawPassInstance
 {
 	uint32_t pass;
+	uint32_t width;
+	uint32_t height;
 	uint32_t vertexCount;
 	uint32_t vertexBuffer;
 	uint32_t colorOutputImageCount;
@@ -164,8 +168,10 @@ struct TRM_Renderer_BlitPassInstanceInfo
 {
 	uint32_t srcImage;
 	uint32_t dstImage;
-	uint32_t width;
-	uint32_t height;
+	uint32_t srcWidth;
+	uint32_t srcHeight;
+	uint32_t dstWidth;
+	uint32_t dstHeight;
 };
 
 struct TRM_Renderer_PassInstance
@@ -188,7 +194,7 @@ void TRM_Renderer_terminate(void);
 
 void TRM_Renderer_beginFrame(void);
 
-void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances);
+void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances, uint32_t windowWidth, uint32_t windowHeight);
 
 void TRM_Renderer_createBuffer(struct TRM_Renderer_BufferCreateInfo info, uint32_t* pHandle);
 
