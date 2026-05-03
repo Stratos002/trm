@@ -20,6 +20,13 @@ struct UniformBuffer
 	struct TRM_Matrix4x4 transformation;
 };
 
+struct Vertex
+{
+	float x;
+	float y;
+	float z;
+};
+
 static void TRM_readShader(const char* pPath, uint32_t* pSize, uint32_t** ppCode)
 {
 	FILE* pFile = fopen(pPath, "rb");
@@ -156,6 +163,13 @@ int main(void)
 		descriptorInfos[1].descriptorType = TRM_RENDERER_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		descriptorInfos[1].resourceAccessFlags = TRM_RENDERER_SHADER_ACCESS_FLAG_READ;
 
+		struct TRM_Renderer_VertexAttributeDescription vertexAttributeDescriptions[1];
+		vertexAttributeDescriptions[0].shaderLocation = 0;
+		vertexAttributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+		vertexAttributeDescriptions[0].offset = 0;
+
+		VkFormat colorOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
+
 		struct TRM_Renderer_DrawPassCreateInfo drawPassCreateInfo = {0};
 		drawPassCreateInfo.vertexCodeSize = vertexCodeSize;
 		drawPassCreateInfo.pVertexCode = pVertexCode;
@@ -163,10 +177,13 @@ int main(void)
 		drawPassCreateInfo.pFragmentCode = pFragmentCode;
 		drawPassCreateInfo.width = TRM_WINDOW_WIDTH;
 		drawPassCreateInfo.height = TRM_WINDOW_HEIGHT;
+		drawPassCreateInfo.colorOutputImageCount = 1;
+		drawPassCreateInfo.pColorOutputImageFormats = &colorOutputFormat;
+		drawPassCreateInfo.vertexStride = sizeof(struct Vertex);
+		drawPassCreateInfo.vertexAttributeDescriptionCount = sizeof(vertexAttributeDescriptions) / sizeof(vertexAttributeDescriptions[0]);
+		drawPassCreateInfo.pVertexAttributeDescriptions = vertexAttributeDescriptions;
 		drawPassCreateInfo.descriptorInfoCount = sizeof(descriptorInfos) / sizeof(descriptorInfos[0]);
 		drawPassCreateInfo.pDescriptorInfos = descriptorInfos;
-		drawPassCreateInfo.colorImageFormat = colorImageFormat;
-		drawPassCreateInfo.depthImageFormat = depthImageFormat;
 
 		TRM_Renderer_createDrawPass(drawPassCreateInfo, &drawPass);
 		
@@ -241,13 +258,22 @@ int main(void)
 			texture
 		};
 
-		{	
+		uint32_t colorOutputImage = colorImage;
+		struct TRM_Renderer_ClearColor clearColor;
+		clearColor.color[0] = cosf(toy);
+		clearColor.color[1] = sinf(toy);
+		clearColor.color[2] = 0.0f;
+		clearColor.color[3] = 1.0f;
+
+		{
 			passInstances[1].type = TRM_RENDERER_PASS_TYPE_DRAW;
 			passInstances[1].info.draw.pass = drawPass;
 			passInstances[1].info.draw.vertexCount = 3;
 			passInstances[1].info.draw.vertexBuffer = vertexBuffer;
-			passInstances[1].info.draw.colorImage = colorImage;
-			passInstances[1].info.draw.depthImage = depthImage;
+			passInstances[1].info.draw.colorOutputImageCount = 1;
+			passInstances[1].info.draw.pColorOutputImages = &colorOutputImage;
+			passInstances[1].info.draw.pClearColors = &clearColor;
+			passInstances[1].info.draw.depthOutputImage = depthImage;
 			passInstances[1].info.draw.bindingCount = sizeof(drawBindings) / sizeof(drawBindings[0]);
 			passInstances[1].info.draw.pBindings = drawBindings;
 		}

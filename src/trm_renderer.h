@@ -76,16 +76,27 @@ struct TRM_Renderer_DescriptorInfo
 	uint32_t resourceAccessFlags;
 };
 
+struct TRM_Renderer_VertexAttributeDescription
+{
+	uint32_t shaderLocation;
+	uint32_t offset;
+	VkFormat format;
+};
+
 struct TRM_Renderer_DrawPassCreateInfo
 {
 	uint32_t vertexCodeSize;
-	uint32_t* pVertexCode;
+	void* pVertexCode;
 	uint32_t fragmentCodeSize;
-	uint32_t* pFragmentCode;
+	void* pFragmentCode;
 	uint32_t width;
 	uint32_t height;
-	VkFormat colorImageFormat;
-	VkFormat depthImageFormat;
+	uint32_t colorOutputImageCount;
+	VkFormat* pColorOutputImageFormats;
+	VkFormat depthOutputFormat;
+	uint32_t vertexStride;
+	uint32_t vertexAttributeDescriptionCount;
+	struct TRM_Renderer_VertexAttributeDescription* pVertexAttributeDescriptions;
 	uint32_t descriptorInfoCount;
 	struct TRM_Renderer_DescriptorInfo* pDescriptorInfos;
 };
@@ -108,14 +119,21 @@ struct TRM_Renderer_DispatchPassInstance
 	uint32_t* pBindings;
 };
 
+struct TRM_Renderer_ClearColor
+{
+	float color[4];
+};
+
 struct TRM_Renderer_DrawPassInstance
 {
 	uint32_t pass;
 	uint32_t vertexCount;
 	uint32_t vertexBuffer;
+	uint32_t colorOutputImageCount;
+	uint32_t* pColorOutputImages;
+	struct TRM_Renderer_ClearColor* pClearColors;
+	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	uint32_t colorImage;
-	uint32_t depthImage;
 	uint32_t* pBindings;
 };
 
@@ -162,14 +180,6 @@ struct TRM_Renderer_PassInstance
 		struct TRM_Renderer_CopyBufferToBufferPassInstanceInfo bufferToBufferCopy;
 		struct TRM_Renderer_BlitPassInstanceInfo blit;
 	} info;
-};
-
-// TODO : remove
-struct Vertex
-{
-	float x;
-	float y;
-	float z;
 };
 
 void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t windowHeight);

@@ -133,7 +133,8 @@ struct TRM_Renderer_Backend_drawPassInstanceInfo
 	uint32_t descriptorSet;
 	uint32_t framebuffer;
 	uint32_t vertexCount;
-	VkClearValue clearValues[2]; // hardcoded for now
+	uint32_t clearColorCount;
+	VkClearValue* pClearColors;
 };
 
 struct TRM_Renderer_Backend_ImageToImagePassInstanceInfo
@@ -966,6 +967,7 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	VkShaderModule vertexShaderModule,
 	VkShaderModule fragmentShaderModule,
 	VkPipelineVertexInputStateCreateInfo vertexInputStateCreateInfo,
+	uint32_t colorAttachmentCount,
 	VkPipelineLayout pipelineLayout,
 	VkRenderPass renderPass,
 	uint32_t viewportWidth,
@@ -1057,19 +1059,24 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	depthStencilStateCreateInfo.minDepthBounds = 0.0f;
 	depthStencilStateCreateInfo.maxDepthBounds = 1.0f;
 
-	VkPipelineColorBlendAttachmentState colorBlendAttachment = {0};
-	colorBlendAttachment.blendEnable = VK_FALSE;
-	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-	colorBlendAttachment.colorWriteMask =
-		VK_COLOR_COMPONENT_R_BIT |
-		VK_COLOR_COMPONENT_G_BIT |
-		VK_COLOR_COMPONENT_B_BIT |
-		VK_COLOR_COMPONENT_A_BIT;
+	VkPipelineColorBlendAttachmentState* pColorBlendAttachments = NULL;
+	TRM_Memory_allocate(sizeof(VkPipelineColorBlendAttachmentState) * colorAttachmentCount, (void**)&pColorBlendAttachments);
+
+	for(uint32_t colorBlendAttachmentIndex = 0; colorBlendAttachmentIndex < colorAttachmentCount; ++colorBlendAttachmentIndex)
+	{
+		pColorBlendAttachments[colorBlendAttachmentIndex].blendEnable = VK_FALSE;
+		pColorBlendAttachments[colorBlendAttachmentIndex].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		pColorBlendAttachments[colorBlendAttachmentIndex].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+		pColorBlendAttachments[colorBlendAttachmentIndex].colorBlendOp = VK_BLEND_OP_ADD;
+		pColorBlendAttachments[colorBlendAttachmentIndex].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		pColorBlendAttachments[colorBlendAttachmentIndex].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+		pColorBlendAttachments[colorBlendAttachmentIndex].alphaBlendOp = VK_BLEND_OP_ADD;
+		pColorBlendAttachments[colorBlendAttachmentIndex].colorWriteMask =
+			VK_COLOR_COMPONENT_R_BIT |
+			VK_COLOR_COMPONENT_G_BIT |
+			VK_COLOR_COMPONENT_B_BIT |
+			VK_COLOR_COMPONENT_A_BIT;
+	}
 
 	VkPipelineColorBlendStateCreateInfo colorBlendStateInfo = {0};
 	colorBlendStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -1077,8 +1084,8 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	colorBlendStateInfo.flags = 0;
 	colorBlendStateInfo.logicOpEnable = VK_FALSE;
 	colorBlendStateInfo.logicOp = VK_LOGIC_OP_COPY;
-	colorBlendStateInfo.attachmentCount = 1;
-	colorBlendStateInfo.pAttachments = &colorBlendAttachment;
+	colorBlendStateInfo.attachmentCount = colorAttachmentCount;
+	colorBlendStateInfo.pAttachments = pColorBlendAttachments;
 	colorBlendStateInfo.blendConstants[0] = 0.0f;
 	colorBlendStateInfo.blendConstants[1] = 0.0f;
 	colorBlendStateInfo.blendConstants[2] = 0.0f;
@@ -1109,6 +1116,8 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	{
 		exit(EXIT_FAILURE);
 	}
+
+	TRM_Memory_deallocate(pColorBlendAttachments);
 }
 
 static uint32_t TRM_Renderer_Backend_translateResource(uint32_t resource, uint32_t swapchainImageIndex)
@@ -1186,6 +1195,13 @@ static void TRM_Renderer_Backend_createPassInstances(
 		struct TRM_Renderer_PassInstance* pPassInstance = &pPassInstances[passInstanceIndex];
 		struct TRM_Renderer_Backend_PassInstance* pBackendPassInstance = &pBackendPassInstances[passInstanceIndex];
 
+		TRM_Memory_allocate(
+			sizeof(struct TRM_Renderer_Backend_ResourceState) * TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT,
+			(void**)&pBackendPassInstance->pResourceStates);
+		TRM_Memory_memzero(
+			sizeof(struct TRM_Renderer_Backend_ResourceState) * TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT,
+			pBackendPassInstance->pResourceStates);
+
 		pBackendPassInstance->type = pPassInstance->type;
 
 		switch(pPassInstance->type)
@@ -1205,35 +1221,166 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->info.dispatch.groupCountX = pPassInstance->info.dispatch.groupCountX;
 			pBackendPassInstance->info.dispatch.groupCountY = pPassInstance->info.dispatch.groupCountY;
 			pBackendPassInstance->info.dispatch.groupCountZ = pPassInstance->info.dispatch.groupCountZ;
+
+			for(uint32_t bindingIndex = 0; bindingIndex < pBackendPassInstance->bindingCount; ++bindingIndex)
+			{
+				uint32_t resource = pBackendPassInstance->pBindings[bindingIndex];
+				struct TRM_Renderer_Backend_Resource* pResource = NULL;
+				TRM_Arena_get(resource, pState->resources, (void**)&pResource);
+				struct TRM_Renderer_Backend_ResourceState* pResourceState = &pBackendPassInstance->pResourceStates[resource];
+				struct TRM_Renderer_Backend_Pass* pPass = NULL;
+				TRM_Arena_get(pBackendPassInstance->info.dispatch.pass, pState->passes, (void**)&pPass);
+
+				VkAccessFlags accessFlags =
+					(pPass->info.dispatch.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_READ) != 0 ?
+					VK_ACCESS_SHADER_READ_BIT :
+					0;
+				accessFlags |=
+					((pPass->info.dispatch.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_WRITE) != 0 ?
+						VK_ACCESS_SHADER_WRITE_BIT :
+						0);
+
+				pResourceState->access |= accessFlags;
+				VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+				if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE)
+				{
+					layout =
+						pPass->info.dispatch.pDescriptorInfos[bindingIndex].descriptorType == TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+						VK_IMAGE_LAYOUT_GENERAL :
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+				}
+				pResourceState->stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			}
 			break;
 		}
 		case TRM_RENDERER_PASS_TYPE_DRAW:
 		{
-			pBackendPassInstance->bindingCount = pPassInstance->info.draw.bindingCount + 3;
+			// 1 vertex buffer + x color attachments + 1 depth attachment + x additional bindings
+			pBackendPassInstance->bindingCount = 1 + pPassInstance->info.draw.colorOutputImageCount + 1 + pPassInstance->info.draw.bindingCount;
+			
+			const uint32_t vertexBufferOffset = 0;
+			const uint32_t colorAttachmentsOffset = vertexBufferOffset + 1;
+			const uint32_t depthAttachmentOffset = colorAttachmentsOffset + pPassInstance->info.draw.colorOutputImageCount;
+			const uint32_t additionalBindingsOffset = depthAttachmentOffset + 1;
+
 			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
 
-			pBackendPassInstance->pBindings[0] = 
+			pBackendPassInstance->pBindings[vertexBufferOffset] =
 				TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.vertexBuffer, swapchainImageIndex);
-			pBackendPassInstance->pBindings[1] = 
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.colorImage, swapchainImageIndex);
-			pBackendPassInstance->pBindings[2] = 
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.depthImage, swapchainImageIndex);
 
-			for(uint32_t bindingIndex = 3; bindingIndex < pBackendPassInstance->bindingCount; ++bindingIndex)
+			for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pPassInstance->info.draw.colorOutputImageCount; ++colorOutputImageIndex)
 			{
-				pBackendPassInstance->pBindings[bindingIndex] = 
-					TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.pBindings[bindingIndex - 3], swapchainImageIndex);
+				pBackendPassInstance->pBindings[colorAttachmentsOffset + colorOutputImageIndex] =
+					TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.pColorOutputImages[colorOutputImageIndex], swapchainImageIndex);
+			}
+
+			pBackendPassInstance->pBindings[depthAttachmentOffset] =
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.depthOutputImage, swapchainImageIndex);
+
+			for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pPassInstance->info.draw.bindingCount; ++additionalBindingIndex)
+			{
+				pBackendPassInstance->pBindings[additionalBindingsOffset + additionalBindingIndex] =
+					TRM_Renderer_Backend_translateResource(pPassInstance->info.draw.pBindings[additionalBindingIndex], swapchainImageIndex);
 			}
 
 			pBackendPassInstance->info.draw.pass = pPassInstance->info.draw.pass;
 			pBackendPassInstance->info.draw.vertexCount = pPassInstance->info.draw.vertexCount;
-			pBackendPassInstance->info.draw.clearValues[0].color.float32[0] = 0.3f;
-			pBackendPassInstance->info.draw.clearValues[0].color.float32[1] = 0.3f;
-			pBackendPassInstance->info.draw.clearValues[0].color.float32[2] = 0.6f;
-			pBackendPassInstance->info.draw.clearValues[0].color.float32[3] = 1.0f;
+			pBackendPassInstance->info.draw.clearColorCount = pPassInstance->info.draw.colorOutputImageCount + 1;
+			
+			TRM_Memory_allocate(sizeof(VkClearColorValue) * (pPassInstance->info.draw.colorOutputImageCount + 1), (void**)&pBackendPassInstance->info.draw.pClearColors);
+			for(uint32_t clearColorIndex = 0; clearColorIndex < pPassInstance->info.draw.colorOutputImageCount; ++clearColorIndex)
+			{
+				pBackendPassInstance->info.draw.pClearColors[clearColorIndex].color.float32[0] = pPassInstance->info.draw.pClearColors[clearColorIndex].color[0];
+				pBackendPassInstance->info.draw.pClearColors[clearColorIndex].color.float32[1] = pPassInstance->info.draw.pClearColors[clearColorIndex].color[1];
+				pBackendPassInstance->info.draw.pClearColors[clearColorIndex].color.float32[2] = pPassInstance->info.draw.pClearColors[clearColorIndex].color[2];
+				pBackendPassInstance->info.draw.pClearColors[clearColorIndex].color.float32[3] = pPassInstance->info.draw.pClearColors[clearColorIndex].color[3];
+			}
 
-			pBackendPassInstance->info.draw.clearValues[1].depthStencil.depth = 1.0f;
-			pBackendPassInstance->info.draw.clearValues[1].depthStencil.stencil = 0;
+			pBackendPassInstance->info.draw.pClearColors[pPassInstance->info.draw.colorOutputImageCount].depthStencil.depth = 1.0f;
+			pBackendPassInstance->info.draw.pClearColors[pPassInstance->info.draw.colorOutputImageCount].depthStencil.stencil = 0;
+
+			VkImageLayout layout;
+			struct TRM_Renderer_Backend_ResourceState* pResourceState = &pBackendPassInstance->pResourceStates[pBackendPassInstance->pBindings[vertexBufferOffset]];
+			pResourceState->access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+			pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+
+			for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pPassInstance->info.draw.colorOutputImageCount; ++colorOutputImageIndex)
+			{
+				pResourceState = &pBackendPassInstance->pResourceStates[pBackendPassInstance->pBindings[colorAttachmentsOffset + colorOutputImageIndex]];
+				pResourceState->access |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+				pResourceState->stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+				layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+				TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+			}
+
+			pResourceState = &pBackendPassInstance->pResourceStates[pBackendPassInstance->pBindings[depthAttachmentOffset]];
+			pResourceState->access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			pResourceState->stage |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+
+			struct TRM_Renderer_Backend_Pass* pPass = NULL;
+			TRM_Arena_get(pBackendPassInstance->info.draw.pass, pState->passes, (void**)&pPass);
+
+			for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pPassInstance->info.draw.bindingCount; ++additionalBindingIndex)
+			{
+				uint32_t resource = pBackendPassInstance->pBindings[additionalBindingsOffset + additionalBindingIndex];
+				struct TRM_Renderer_Backend_Resource* pResource = NULL;
+				TRM_Arena_get(resource, pState->resources, (void**)&pResource);
+				pResourceState = &pBackendPassInstance->pResourceStates[resource];
+
+				VkAccessFlags accessFlags =
+					(pPass->info.draw.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_READ) != 0 ?
+					VK_ACCESS_SHADER_READ_BIT :
+					0;
+				accessFlags |=
+					((pPass->info.draw.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_WRITE) != 0 ?
+						VK_ACCESS_SHADER_WRITE_BIT :
+						0);
+
+				pResourceState->access |= accessFlags;
+				layout = VK_IMAGE_LAYOUT_UNDEFINED;
+				if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE)
+				{
+					layout = pPass->info.draw.pDescriptorInfos[additionalBindingIndex].descriptorType == TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+						VK_IMAGE_LAYOUT_GENERAL :
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+				}
+				pResourceState->stage |= (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+			}
+
+			// framebuffer creation - feels out of place
+			VkImageView* pAttachments = NULL;
+			TRM_Memory_allocate(sizeof(VkImageView) * (pPassInstance->info.draw.colorOutputImageCount + 1), (void**)&pAttachments);
+
+			for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pPassInstance->info.draw.colorOutputImageCount; ++colorOutputImageIndex)
+			{
+				struct TRM_Renderer_Backend_Resource* pColorImage = NULL;
+				TRM_Arena_get(pBackendPassInstance->pBindings[colorAttachmentsOffset + colorOutputImageIndex], pState->resources, (void**)&pColorImage);
+				pAttachments[colorOutputImageIndex] = pColorImage->info.image.imageView;
+			}
+
+			struct TRM_Renderer_Backend_Resource* pDepthImage = NULL;
+			TRM_Arena_get(pBackendPassInstance->pBindings[depthAttachmentOffset], pState->resources, (void**)&pDepthImage);
+			pAttachments[pPassInstance->info.draw.colorOutputImageCount] = pDepthImage->info.image.imageView;
+
+			TRM_Renderer_Backend_createFramebuffer(
+				pState->pAllocator,
+				pState->device,
+				pPass->info.draw.renderPass,
+				pPassInstance->info.draw.colorOutputImageCount + 1,
+				pAttachments,
+				pPass->info.draw.width,
+				pPass->info.draw.height,
+				&pState->pFrameInfos[pState->frameIndex].framebuffers[pState->pFrameInfos[pState->frameIndex].framebufferCount]);
+
+			TRM_Memory_deallocate(pAttachments);
+
+			pBackendPassInstance->info.draw.framebuffer = pState->pFrameInfos[pState->frameIndex].framebufferCount;
+			pState->pFrameInfos[pState->frameIndex].framebufferCount += 1;
+
 			break;
 		}
 		case TRM_RENDERER_PASS_TYPE_IMAGE_TO_IMAGE_COPY:
@@ -1248,124 +1395,7 @@ static void TRM_Renderer_Backend_createPassInstances(
 
 			pBackendPassInstance->info.imageToImageCopy.width = pPassInstance->info.imageToImageCopy.width;
 			pBackendPassInstance->info.imageToImageCopy.height = pPassInstance->info.imageToImageCopy.height;
-			break;
-		}
-		case TRM_RENDERER_PASS_TYPE_BUFFER_TO_IMAGE_COPY:
-		{
-			pBackendPassInstance->bindingCount = 2;
-			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
 
-			pBackendPassInstance->pBindings[0] = 
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToImageCopy.srcBuffer, swapchainImageIndex);
-			pBackendPassInstance->pBindings[1] = 
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToImageCopy.dstImage, swapchainImageIndex);
-
-			pBackendPassInstance->info.bufferToImageCopy.width = pPassInstance->info.bufferToImageCopy.width;
-			pBackendPassInstance->info.bufferToImageCopy.height = pPassInstance->info.bufferToImageCopy.height;
-			break;
-		}
-		case TRM_RENDERER_PASS_TYPE_BUFFER_TO_BUFFER_COPY:
-		{
-			pBackendPassInstance->bindingCount = 2;
-			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
-
-			pBackendPassInstance->pBindings[0] = 
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToBufferCopy.srcBuffer, swapchainImageIndex);
-			pBackendPassInstance->pBindings[1] = 
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToBufferCopy.dstBuffer, swapchainImageIndex);
-
-			pBackendPassInstance->info.bufferToBufferCopy.sizeInBytes = pPassInstance->info.bufferToBufferCopy.sizeInBytes;
-			break;
-		}
-		case TRM_RENDERER_PASS_TYPE_BLIT:
-		{
-			pBackendPassInstance->bindingCount = 2;
-			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
-
-			pBackendPassInstance->pBindings[0] =
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.srcImage, swapchainImageIndex);
-			pBackendPassInstance->pBindings[1] =
-				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.dstImage, swapchainImageIndex);
-
-			pBackendPassInstance->info.blit.width = pPassInstance->info.blit.width;
-			pBackendPassInstance->info.blit.height = pPassInstance->info.blit.height;
-			break;
-		}
-		case TRM_RENDERER_PASS_TYPE_PRESENT:
-		{
-			pBackendPassInstance->bindingCount = 1;
-			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
-
-			pBackendPassInstance->pBindings[0] = 
-				TRM_Renderer_Backend_translateResource(pState->pSwapchainImageInfos[swapchainImageIndex].colorImage, swapchainImageIndex);
-			break;
-		}
-		default: break;
-		}
-
-		TRM_Memory_allocate(
-			sizeof(struct TRM_Renderer_Backend_ResourceState) * TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT, 
-			(void**)&pBackendPassInstance->pResourceStates);
-		TRM_Memory_memzero(
-			sizeof(struct TRM_Renderer_Backend_ResourceState) * TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT, 
-			pBackendPassInstance->pResourceStates);
-
-		switch(pPassInstance->type)
-		{
-		case TRM_RENDERER_PASS_TYPE_DRAW:
-		{
-			uint32_t vertexBuffer = pBackendPassInstance->pBindings[0];
-			uint32_t colorImage = pBackendPassInstance->pBindings[1];
-			uint32_t depthImage = pBackendPassInstance->pBindings[2];
-
-			VkImageLayout layout;
-			struct TRM_Renderer_Backend_ResourceState* pResourceState = &pBackendPassInstance->pResourceStates[vertexBuffer];
-			pResourceState->access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-			pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-
-			pResourceState = &pBackendPassInstance->pResourceStates[colorImage];
-			pResourceState->access |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			pResourceState->stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-
-			pResourceState = &pBackendPassInstance->pResourceStates[depthImage];
-			pResourceState->access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-			pResourceState->stage |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-			layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-			TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-
-			// feels out of place
-			struct TRM_Renderer_Backend_Resource* pColorImage = NULL;
-			struct TRM_Renderer_Backend_Resource* pDepthImage = NULL;
-			TRM_Arena_get(pBackendPassInstance->pBindings[1], pState->resources, (void**)&pColorImage);
-			TRM_Arena_get(pBackendPassInstance->pBindings[2], pState->resources, (void**)&pDepthImage);
-
-			VkImageView attachments[2] = {
-				pColorImage->info.image.imageView,
-				pDepthImage->info.image.imageView
-			};
-
-			struct TRM_Renderer_Backend_Pass* pPass = NULL;
-			TRM_Arena_get(pBackendPassInstance->info.draw.pass, pState->passes, (void**)&pPass);
-
-			TRM_Renderer_Backend_createFramebuffer(
-				pState->pAllocator,
-				pState->device,
-				pPass->info.draw.renderPass,
-				2,
-				attachments,
-				pState->swapchainWidth,
-				pState->swapchainHeight,
-				&pState->pFrameInfos[pState->frameIndex].framebuffers[pState->pFrameInfos[pState->frameIndex].framebufferCount]);
-				
-
-			pBackendPassInstance->info.draw.framebuffer = pState->pFrameInfos[pState->frameIndex].framebufferCount;
-			pState->pFrameInfos[pState->frameIndex].framebufferCount += 1;
-			break;
-		}
-		case TRM_RENDERER_PASS_TYPE_IMAGE_TO_IMAGE_COPY:
-		{
 			uint32_t srcImage = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
 
@@ -1385,6 +1415,17 @@ static void TRM_Renderer_Backend_createPassInstances(
 		}
 		case TRM_RENDERER_PASS_TYPE_BUFFER_TO_IMAGE_COPY:
 		{
+			pBackendPassInstance->bindingCount = 2;
+			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
+
+			pBackendPassInstance->pBindings[0] = 
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToImageCopy.srcBuffer, swapchainImageIndex);
+			pBackendPassInstance->pBindings[1] = 
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToImageCopy.dstImage, swapchainImageIndex);
+
+			pBackendPassInstance->info.bufferToImageCopy.width = pPassInstance->info.bufferToImageCopy.width;
+			pBackendPassInstance->info.bufferToImageCopy.height = pPassInstance->info.bufferToImageCopy.height;
+
 			uint32_t srcBuffer = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
 
@@ -1401,6 +1442,16 @@ static void TRM_Renderer_Backend_createPassInstances(
 		}
 		case TRM_RENDERER_PASS_TYPE_BUFFER_TO_BUFFER_COPY:
 		{
+			pBackendPassInstance->bindingCount = 2;
+			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
+
+			pBackendPassInstance->pBindings[0] = 
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToBufferCopy.srcBuffer, swapchainImageIndex);
+			pBackendPassInstance->pBindings[1] = 
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToBufferCopy.dstBuffer, swapchainImageIndex);
+
+			pBackendPassInstance->info.bufferToBufferCopy.sizeInBytes = pPassInstance->info.bufferToBufferCopy.sizeInBytes;
+
 			uint32_t srcBuffer = pBackendPassInstance->pBindings[0];
 			uint32_t dstBuffer = pBackendPassInstance->pBindings[1];
 
@@ -1415,6 +1466,17 @@ static void TRM_Renderer_Backend_createPassInstances(
 		}
 		case TRM_RENDERER_PASS_TYPE_BLIT:
 		{
+			pBackendPassInstance->bindingCount = 2;
+			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
+
+			pBackendPassInstance->pBindings[0] =
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.srcImage, swapchainImageIndex);
+			pBackendPassInstance->pBindings[1] =
+				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.dstImage, swapchainImageIndex);
+
+			pBackendPassInstance->info.blit.width = pPassInstance->info.blit.width;
+			pBackendPassInstance->info.blit.height = pPassInstance->info.blit.height;
+
 			uint32_t srcImage = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
 
@@ -1434,6 +1496,12 @@ static void TRM_Renderer_Backend_createPassInstances(
 		}
 		case TRM_RENDERER_PASS_TYPE_PRESENT:
 		{
+			pBackendPassInstance->bindingCount = 1;
+			TRM_Memory_allocate(sizeof(uint32_t) * pBackendPassInstance->bindingCount, (void**)&pBackendPassInstance->pBindings);
+
+			pBackendPassInstance->pBindings[0] = 
+				TRM_Renderer_Backend_translateResource(pState->pSwapchainImageInfos[swapchainImageIndex].colorImage, swapchainImageIndex);
+
 			uint32_t colorImage = pBackendPassInstance->pBindings[0];
 
 			struct TRM_Renderer_Backend_ResourceState* pResourceState = &pBackendPassInstance->pResourceStates[colorImage];
@@ -1443,71 +1511,6 @@ static void TRM_Renderer_Backend_createPassInstances(
 			break;
 		}
 		default: break;
-		}
-
-		if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_DISPATCH || pPassInstance->type == TRM_RENDERER_PASS_TYPE_DRAW)
-		{
-			uint32_t bindingOffset = pPassInstance->type == TRM_RENDERER_PASS_TYPE_DRAW ? 3 : 0;
-
-			for(uint32_t bindingIndex = 0; bindingIndex < pBackendPassInstance->bindingCount - bindingOffset; ++bindingIndex)
-			{
-				uint32_t resource = pBackendPassInstance->pBindings[bindingIndex + bindingOffset];
-				struct TRM_Renderer_Backend_Resource* pResource = NULL;
-				TRM_Arena_get(resource, pState->resources, (void**)&pResource);
-				struct TRM_Renderer_Backend_ResourceState* pResourceState = &pBackendPassInstance->pResourceStates[resource];
-
-				if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_DISPATCH)
-				{
-					struct TRM_Renderer_Backend_Pass* pPass = NULL;
-					TRM_Arena_get(pBackendPassInstance->info.dispatch.pass, pState->passes, (void**)&pPass);
-
-					VkAccessFlags accessFlags = 
-						(pPass->info.dispatch.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_READ) != 0 ?
-							VK_ACCESS_SHADER_READ_BIT : 
-							0;
-					accessFlags |= 
-						((pPass->info.dispatch.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_WRITE) != 0 ?
-							VK_ACCESS_SHADER_WRITE_BIT : 
-							0);
-
-					pResourceState->access |= accessFlags;
-					VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-					if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE)
-					{
-						layout = 
-							pPass->info.dispatch.pDescriptorInfos[bindingIndex].descriptorType == TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
-								VK_IMAGE_LAYOUT_GENERAL : 
-								VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-						TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-					}
-					pResourceState->stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-				}
-				else
-				{
-					struct TRM_Renderer_Backend_Pass* pPass = NULL;
-					TRM_Arena_get(pBackendPassInstance->info.draw.pass, pState->passes, (void**)&pPass);
-
-					VkAccessFlags accessFlags = 
-						(pPass->info.draw.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_READ) != 0 ?
-							VK_ACCESS_SHADER_READ_BIT : 
-							0;
-					accessFlags |= 
-						((pPass->info.draw.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_WRITE) != 0 ?
-							VK_ACCESS_SHADER_WRITE_BIT : 
-							0);
-
-					pResourceState->access |= accessFlags;
-					VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-					if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE)
-					{
-						layout = pPass->info.draw.pDescriptorInfos[bindingIndex].descriptorType == TRM_RENDERER_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
-								VK_IMAGE_LAYOUT_GENERAL : 
-								VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-						TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-					}
-					pResourceState->stage |= (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-				}
-			}
 		}
 	}
 }
@@ -1806,8 +1809,8 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 			renderPassBeginInfo.renderArea.offset.y = 0;
 			renderPassBeginInfo.renderArea.extent.width = pPass->info.draw.width;
 			renderPassBeginInfo.renderArea.extent.height = pPass->info.draw.height;
-			renderPassBeginInfo.clearValueCount = 2;
-			renderPassBeginInfo.pClearValues = pPassInstance->info.draw.clearValues;
+			renderPassBeginInfo.clearValueCount = pPassInstance->info.draw.clearColorCount;
+			renderPassBeginInfo.pClearValues = pPassInstance->info.draw.pClearColors;
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -2182,6 +2185,11 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 	{
 		TRM_Memory_deallocate(pBackendPassInstances[passInstanceIndex].pBindings);
 		TRM_Memory_deallocate(pBackendPassInstances[passInstanceIndex].pResourceStates);
+
+		if(pBackendPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_DRAW)
+		{
+			TRM_Memory_deallocate(pBackendPassInstances[passInstanceIndex].info.draw.pClearColors);
+		}
 	}
 	TRM_Memory_deallocate(pBackendPassInstances);
 
@@ -2572,21 +2580,26 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 		&pass.info.draw.pipelineLayout);
 
 	VkShaderModule vertexShaderModule;
-	TRM_Renderer_Backend_createShaderModule(pState->pAllocator, pState->device, info.vertexCodeSize, info.pVertexCode, &vertexShaderModule);
+	TRM_Renderer_Backend_createShaderModule(pState->pAllocator, pState->device, info.vertexCodeSize, (uint32_t*)info.pVertexCode, &vertexShaderModule);
 
 	VkShaderModule fragmentShaderModule;
-	TRM_Renderer_Backend_createShaderModule(pState->pAllocator, pState->device, info.fragmentCodeSize, info.pFragmentCode, &fragmentShaderModule);
+	TRM_Renderer_Backend_createShaderModule(pState->pAllocator, pState->device, info.fragmentCodeSize, (uint32_t*)info.pFragmentCode, &fragmentShaderModule);
+
+	VkVertexInputAttributeDescription* pVertexAttributeDescriptions = NULL;
+	TRM_Memory_allocate(sizeof(VkVertexInputAttributeDescription) * info.vertexAttributeDescriptionCount, (void**)&pVertexAttributeDescriptions);
+
+	for(uint32_t i = 0; i < info.vertexAttributeDescriptionCount; ++i)
+	{
+		pVertexAttributeDescriptions[i].binding = 0;
+		pVertexAttributeDescriptions[i].format = info.pVertexAttributeDescriptions[i].format;
+		pVertexAttributeDescriptions[i].location = info.pVertexAttributeDescriptions[i].shaderLocation;
+		pVertexAttributeDescriptions[i].offset = info.pVertexAttributeDescriptions[i].offset;
+	}
 
 	VkVertexInputBindingDescription vertexBindingDescription = {0};
 	vertexBindingDescription.binding = 0;
 	vertexBindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-	vertexBindingDescription.stride = sizeof(struct Vertex);
-
-	VkVertexInputAttributeDescription vertexAttributeDescriptions = {0};
-	vertexAttributeDescriptions.binding = 0;
-	vertexAttributeDescriptions.format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertexAttributeDescriptions.location = 0;
-	vertexAttributeDescriptions.offset = 0;
+	vertexBindingDescription.stride = info.vertexStride;
 
 	VkPipelineVertexInputStateCreateInfo vertexInputStateCreateInfo = {0};
 	vertexInputStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -2594,42 +2607,46 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 	vertexInputStateCreateInfo.flags = 0;
 	vertexInputStateCreateInfo.vertexBindingDescriptionCount = 1;
 	vertexInputStateCreateInfo.pVertexBindingDescriptions = &vertexBindingDescription;
-	vertexInputStateCreateInfo.vertexAttributeDescriptionCount = 1;
-	vertexInputStateCreateInfo.pVertexAttributeDescriptions = &vertexAttributeDescriptions;
+	vertexInputStateCreateInfo.vertexAttributeDescriptionCount = info.vertexAttributeDescriptionCount;
+	vertexInputStateCreateInfo.pVertexAttributeDescriptions = pVertexAttributeDescriptions;
 
-	VkFormat colorAttachmentFormat = info.colorImageFormat;
-	if(info.colorImageFormat == TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT)
+	VkAttachmentDescription* pAttachmentDescriptions = NULL;
+	TRM_Memory_allocate(sizeof(VkAttachmentDescription) * (info.colorOutputImageCount + 1), (void**)&pAttachmentDescriptions);
+
+	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < info.colorOutputImageCount; ++colorOutputImageIndex)
 	{
-		colorAttachmentFormat = pState->swapchainFormat;
+		pAttachmentDescriptions[colorOutputImageIndex].flags = 0;
+		pAttachmentDescriptions[colorOutputImageIndex].format = info.pColorOutputImageFormats[colorOutputImageIndex];
+		pAttachmentDescriptions[colorOutputImageIndex].samples = VK_SAMPLE_COUNT_1_BIT;
+		pAttachmentDescriptions[colorOutputImageIndex].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		pAttachmentDescriptions[colorOutputImageIndex].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		pAttachmentDescriptions[colorOutputImageIndex].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		pAttachmentDescriptions[colorOutputImageIndex].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		pAttachmentDescriptions[colorOutputImageIndex].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		pAttachmentDescriptions[colorOutputImageIndex].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	}
 
-	VkAttachmentDescription attachmentDescriptions[2];
-	attachmentDescriptions[0].flags = 0;
-	attachmentDescriptions[0].format = colorAttachmentFormat;
-	attachmentDescriptions[0].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachmentDescriptions[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachmentDescriptions[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachmentDescriptions[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachmentDescriptions[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachmentDescriptions[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	attachmentDescriptions[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	pAttachmentDescriptions[info.colorOutputImageCount].flags = 0;
+	pAttachmentDescriptions[info.colorOutputImageCount].format = VK_FORMAT_D32_SFLOAT; // expose ?
+	pAttachmentDescriptions[info.colorOutputImageCount].samples = VK_SAMPLE_COUNT_1_BIT;
+	pAttachmentDescriptions[info.colorOutputImageCount].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	pAttachmentDescriptions[info.colorOutputImageCount].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	pAttachmentDescriptions[info.colorOutputImageCount].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	pAttachmentDescriptions[info.colorOutputImageCount].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	pAttachmentDescriptions[info.colorOutputImageCount].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	pAttachmentDescriptions[info.colorOutputImageCount].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-	attachmentDescriptions[1].flags = 0;
-	attachmentDescriptions[1].format = info.depthImageFormat;
-	attachmentDescriptions[1].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachmentDescriptions[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachmentDescriptions[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachmentDescriptions[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachmentDescriptions[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachmentDescriptions[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	attachmentDescriptions[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	VkAttachmentReference* pColorAttachmentReferences = NULL;
+	TRM_Memory_allocate(sizeof(VkAttachmentReference) * info.colorOutputImageCount, (void**)&pColorAttachmentReferences);
 
-	VkAttachmentReference colorAttachmentReference = {0};
-	colorAttachmentReference.attachment = 0;
-	colorAttachmentReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < info.colorOutputImageCount; ++colorOutputImageIndex)
+	{
+		pColorAttachmentReferences[colorOutputImageIndex].attachment = colorOutputImageIndex;
+		pColorAttachmentReferences[colorOutputImageIndex].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	}	
 
-	VkAttachmentReference depthAttachmentReference = {0};
-	depthAttachmentReference.attachment = 1;
+	VkAttachmentReference depthAttachmentReference;
+	depthAttachmentReference.attachment = info.colorOutputImageCount;
 	depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	VkSubpassDescription subpassDescription = {0};
@@ -2637,8 +2654,8 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 	subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpassDescription.inputAttachmentCount = 0;
 	subpassDescription.pInputAttachments = NULL;
-	subpassDescription.colorAttachmentCount = 1;
-	subpassDescription.pColorAttachments = &colorAttachmentReference;
+	subpassDescription.colorAttachmentCount = info.colorOutputImageCount;
+	subpassDescription.pColorAttachments = pColorAttachmentReferences;
 	subpassDescription.pResolveAttachments = NULL;
 	subpassDescription.pDepthStencilAttachment = &depthAttachmentReference;
 	subpassDescription.preserveAttachmentCount = 0;
@@ -2647,8 +2664,8 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 	TRM_Renderer_Backend_createRenderPass(
 		pState->pAllocator,
 		pState->device,
-		sizeof(attachmentDescriptions) / sizeof(attachmentDescriptions[0]),
-		attachmentDescriptions,
+		info.colorOutputImageCount + 1,
+		pAttachmentDescriptions,
 		subpassDescription,
 		&pass.info.draw.renderPass);
 
@@ -2658,6 +2675,7 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 		vertexShaderModule,
 		fragmentShaderModule,
 		vertexInputStateCreateInfo,
+		info.colorOutputImageCount,
 		pass.info.draw.pipelineLayout,
 		pass.info.draw.renderPass,
 		pass.info.draw.width,
@@ -2666,6 +2684,10 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 
 	vkDestroyShaderModule(pState->device, vertexShaderModule, pState->pAllocator);
 	vkDestroyShaderModule(pState->device, fragmentShaderModule, pState->pAllocator);
+
+	TRM_Memory_deallocate(pVertexAttributeDescriptions);
+	TRM_Memory_deallocate(pAttachmentDescriptions);
+	TRM_Memory_deallocate(pColorAttachmentReferences);
 
 	TRM_Arena_add(&pass, &pState->passes, pHandle);
 }
