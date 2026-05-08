@@ -2600,13 +2600,24 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 
 	VkPipelineStageFlags waitDstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
+	VkSemaphore signalSemaphores[2] = {
+		pState->pSwapchainImageInfos[swapchainImageIndex].imageRenderedSemaphore,
+		pState->pFrameInfos[pState->frameIndex].timelineSemaphore
+	};
+
+	uint64_t signalValues[2] =
+	{
+		0, // ignored for binary semaphore
+		pState->submitionIndex + 1
+	};
+
 	VkTimelineSemaphoreSubmitInfo timelineSemaphoreSubmitInfo = {0};
 	timelineSemaphoreSubmitInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
 	timelineSemaphoreSubmitInfo.pNext = NULL;
 	timelineSemaphoreSubmitInfo.waitSemaphoreValueCount = 0;
 	timelineSemaphoreSubmitInfo.pWaitSemaphoreValues = NULL;
-	timelineSemaphoreSubmitInfo.signalSemaphoreValueCount = 1;
-	timelineSemaphoreSubmitInfo.pSignalSemaphoreValues = &pState->submitionIndex;
+	timelineSemaphoreSubmitInfo.signalSemaphoreValueCount = 2;
+	timelineSemaphoreSubmitInfo.pSignalSemaphoreValues = signalValues;
 
 	VkSubmitInfo submitInfo = {0};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -2616,8 +2627,8 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 	submitInfo.pWaitDstStageMask = &waitDstStageMask;
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &pState->pFrameInfos[pState->frameIndex].commandBuffer;
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = &pState->pSwapchainImageInfos[swapchainImageIndex].imageRenderedSemaphore;
+	submitInfo.signalSemaphoreCount = 2;
+	submitInfo.pSignalSemaphores = signalSemaphores;
 
 	if(vkResetFences(pState->device, 1, &pState->pFrameInfos[pState->frameIndex].commandBufferExecutedFence) != VK_SUCCESS)
 	{
