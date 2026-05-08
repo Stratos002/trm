@@ -7,6 +7,7 @@
 #include "trm_memory.h"
 #include "trm_renderer.h"
 #include "trm_maths.h"
+#include "trm_containers.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -51,6 +52,7 @@ static void TRM_readImage(const char* pPath, uint32_t* pWidth, uint32_t* pHeight
 {
 	*ppData = (uint8_t*)stbi_load(pPath, (int32_t*)pWidth, (int32_t*)pHeight, (int32_t*)pChannels, 4);
 }
+
 
 int main(void)
 {
@@ -101,7 +103,12 @@ int main(void)
 		colorImageCreateInfo.height = TRM_WINDOW_HEIGHT;
 		colorImageCreateInfo.format = colorImageFormat;
 		colorImageCreateInfo.usage = TRM_RENDERER_IMAGE_USAGE_COLOR_ATTACHMENT | TRM_RENDERER_IMAGE_USAGE_TRANSFER_SRC | TRM_RENDERER_IMAGE_USAGE_STORAGE;
-		TRM_Renderer_createImage(colorImageCreateInfo, &colorImage);
+
+		struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+		resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+		resourceCreateInfo.info.image = colorImageCreateInfo;
+
+		TRM_Renderer_createResource(resourceCreateInfo, &colorImage);
 	}
 
 	{
@@ -110,7 +117,12 @@ int main(void)
 		depthImageCreateInfo.height = TRM_WINDOW_HEIGHT;
 		depthImageCreateInfo.format = depthImageFormat;
 		depthImageCreateInfo.usage = TRM_RENDERER_IMAGE_USAGE_DEPTH_ATTACHMENT;
-		TRM_Renderer_createImage(depthImageCreateInfo, &depthImage);
+
+		struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+		resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+		resourceCreateInfo.info.image = depthImageCreateInfo;
+
+		TRM_Renderer_createResource(resourceCreateInfo, &depthImage);
 	}
 
 	{
@@ -118,7 +130,12 @@ int main(void)
 		vertexBufferCreateInfo.sizeInBytes = sizeof(vertices);
 		vertexBufferCreateInfo.hostVisible = true;
 		vertexBufferCreateInfo.usage = TRM_RENDERER_BUFFER_USAGE_VERTEX;
-		TRM_Renderer_createBuffer(vertexBufferCreateInfo, &vertexBuffer);
+
+		struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+		resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
+		resourceCreateInfo.info.buffer = vertexBufferCreateInfo;
+
+		TRM_Renderer_createResource(resourceCreateInfo, &vertexBuffer);
 	}
 
 	{
@@ -126,7 +143,12 @@ int main(void)
 		uniformBufferCreateInfo.sizeInBytes = sizeof(struct UniformBuffer);
 		uniformBufferCreateInfo.hostVisible = true;
 		uniformBufferCreateInfo.usage = TRM_RENDERER_BUFFER_USAGE_UNIFORM;
-		TRM_Renderer_createBuffer(uniformBufferCreateInfo, &uniformBuffer);
+
+		struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+		resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
+		resourceCreateInfo.info.buffer = uniformBufferCreateInfo;
+
+		TRM_Renderer_createResource(resourceCreateInfo, &uniformBuffer);
 	}
 
 	{
@@ -135,7 +157,12 @@ int main(void)
 		textureCreateInfo.height = height;
 		textureCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 		textureCreateInfo.usage = TRM_RENDERER_IMAGE_USAGE_TRANSFER_DST | TRM_RENDERER_IMAGE_USAGE_SAMPLED;
-		TRM_Renderer_createImage(textureCreateInfo, &texture);
+
+		struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+		resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+		resourceCreateInfo.info.image = textureCreateInfo;
+
+		TRM_Renderer_createResource(resourceCreateInfo, &texture);
 	}
 
 	{
@@ -143,7 +170,12 @@ int main(void)
 		bufferUploadCreateInfo.sizeInBytes = width * height * 4;
 		bufferUploadCreateInfo.hostVisible = true;
 		bufferUploadCreateInfo.usage = TRM_RENDERER_BUFFER_USAGE_TRANSFER_SRC;
-		TRM_Renderer_createBuffer(bufferUploadCreateInfo, &bufferUpload);
+
+		struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+		resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_BUFFER;
+		resourceCreateInfo.info.buffer = bufferUploadCreateInfo;
+
+		TRM_Renderer_createResource(resourceCreateInfo, &bufferUpload);
 	}
 
 	{
@@ -173,8 +205,6 @@ int main(void)
 		drawPassCreateInfo.pVertexCode = pVertexCode;
 		drawPassCreateInfo.fragmentCodeSize = fragmentCodeSize;
 		drawPassCreateInfo.pFragmentCode = pFragmentCode;
-		drawPassCreateInfo.width = TRM_WINDOW_WIDTH;
-		drawPassCreateInfo.height = TRM_WINDOW_HEIGHT;
 		drawPassCreateInfo.colorOutputImageCount = 1;
 		drawPassCreateInfo.pColorOutputImageFormats = &colorImageFormat;
 		drawPassCreateInfo.vertexStride = sizeof(struct Vertex);
@@ -209,12 +239,51 @@ int main(void)
 		TRM_Memory_deallocate(pComputeCode);
 	}
 
+	uint32_t framebufferWidth = TRM_WINDOW_WIDTH;
+	uint32_t framebufferHeight = TRM_WINDOW_HEIGHT;
+	uint32_t currentWindowWidth = TRM_WINDOW_WIDTH;
+	uint32_t currentWindowHeight = TRM_WINDOW_HEIGHT;
 
 	while(!glfwWindowShouldClose(pWindow))
 	{
 		glfwPollEvents();
 		
 		TRM_Renderer_beginFrame();
+
+		glfwGetFramebufferSize(pWindow, (int*)&currentWindowWidth, (int*)&currentWindowHeight);
+		if(framebufferWidth != currentWindowWidth || framebufferHeight != currentWindowHeight)
+		{
+			TRM_Renderer_destroyResource(colorImage);
+			TRM_Renderer_destroyResource(depthImage);
+
+			{
+				struct TRM_Renderer_ImageCreateInfo colorImageCreateInfo = {0};
+				colorImageCreateInfo.width = currentWindowWidth;
+				colorImageCreateInfo.height = currentWindowHeight;
+				colorImageCreateInfo.format = colorImageFormat;
+				colorImageCreateInfo.usage = TRM_RENDERER_IMAGE_USAGE_COLOR_ATTACHMENT | TRM_RENDERER_IMAGE_USAGE_TRANSFER_SRC | TRM_RENDERER_IMAGE_USAGE_STORAGE;
+
+				struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+				resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+				resourceCreateInfo.info.image = colorImageCreateInfo;
+
+				TRM_Renderer_createResource(resourceCreateInfo, &colorImage);
+			}
+
+			{
+				struct TRM_Renderer_ImageCreateInfo depthImageCreateInfo = {0};
+				depthImageCreateInfo.width = currentWindowWidth;
+				depthImageCreateInfo.height = currentWindowHeight;
+				depthImageCreateInfo.format = depthImageFormat;
+				depthImageCreateInfo.usage = TRM_RENDERER_IMAGE_USAGE_DEPTH_ATTACHMENT;
+
+				struct TRM_Renderer_ResourceCreateInfo resourceCreateInfo = {0};
+				resourceCreateInfo.type = TRM_RENDERER_RESOURCE_TYPE_IMAGE;
+				resourceCreateInfo.info.image = depthImageCreateInfo;
+
+				TRM_Renderer_createResource(resourceCreateInfo, &depthImage);
+			}
+		}
 
 		struct UniformBuffer uniformBufferData;
 
@@ -227,7 +296,7 @@ int main(void)
 		tra.z = 5.0f;
 
 		static float toy = 0.0f;
-		TRM_Matrix4x4_getProjection(1.2f, 1.0f, &uniformBufferData.projection);
+		TRM_Matrix4x4_getProjection(1.2f, currentWindowWidth / (float)currentWindowHeight, &uniformBufferData.projection);
 		TRM_Matrix4x4_transpose(&uniformBufferData.projection);
 		TRM_Matrix4x4_getRotation(toy, 0.0f, 0.0f, &rotation);
 		TRM_Matrix4x4_getTranslation(tra, &translation);
@@ -266,8 +335,8 @@ int main(void)
 		{
 			passInstances[1].type = TRM_RENDERER_PASS_TYPE_DRAW;
 			passInstances[1].info.draw.pass = drawPass;
-			passInstances[1].info.draw.width = TRM_WINDOW_WIDTH;
-			passInstances[1].info.draw.height = TRM_WINDOW_HEIGHT;
+			passInstances[1].info.draw.width = currentWindowWidth;
+			passInstances[1].info.draw.height = currentWindowHeight;
 			passInstances[1].info.draw.vertexCount = 3;
 			passInstances[1].info.draw.vertexBuffer = vertexBuffer;
 			passInstances[1].info.draw.colorOutputImageCount = 1;
@@ -281,8 +350,8 @@ int main(void)
 		{
 			passInstances[2].type = TRM_RENDERER_PASS_TYPE_DISPATCH;
 			passInstances[2].info.dispatch.pass = computePass;
-			passInstances[2].info.dispatch.groupCountX = (TRM_WINDOW_WIDTH + 8 - 1) / 8;
-			passInstances[2].info.dispatch.groupCountY = (TRM_WINDOW_HEIGHT + 8 - 1) / 8;
+			passInstances[2].info.dispatch.groupCountX = (currentWindowWidth + 8 - 1) / 8;
+			passInstances[2].info.dispatch.groupCountY = (currentWindowHeight + 8 - 1) / 8;
 			passInstances[2].info.dispatch.groupCountZ = 1;
 			passInstances[2].info.dispatch.bindingCount = 1;
 			passInstances[2].info.dispatch.pBindings = &colorImage;
@@ -292,31 +361,21 @@ int main(void)
 			passInstances[3].type = TRM_RENDERER_PASS_TYPE_BLIT;
 			passInstances[3].info.blit.srcImage = colorImage;
 			passInstances[3].info.blit.dstImage = TRM_RENDERER_SWAPCHAIN_IMAGE;
-			passInstances[3].info.blit.srcWidth = TRM_WINDOW_WIDTH;
-			passInstances[3].info.blit.srcHeight = TRM_WINDOW_HEIGHT;
-			passInstances[3].info.blit.dstWidth = TRM_RENDERER_SWAPCHAIN_WIDTH;
-			passInstances[3].info.blit.dstHeight = TRM_RENDERER_SWAPCHAIN_HEIGHT;
+			passInstances[3].info.blit.srcWidth = currentWindowWidth;
+			passInstances[3].info.blit.srcHeight = currentWindowHeight;
+			passInstances[3].info.blit.dstWidth = currentWindowWidth;
+			passInstances[3].info.blit.dstHeight = currentWindowHeight;
 		}
 
 		{
 			passInstances[4].type = TRM_RENDERER_PASS_TYPE_PRESENT;
 		}
 
-		uint32_t windowWidth = 0;
-		uint32_t windowHeight = 0;
-		glfwGetFramebufferSize(pWindow, (int*)&windowWidth, (int*)&windowHeight);
-		TRM_Renderer_endFrame(sizeof(passInstances) / sizeof(passInstances[0]), passInstances, windowWidth, windowHeight);
+		TRM_Renderer_endFrame(sizeof(passInstances) / sizeof(passInstances[0]), passInstances, currentWindowWidth, currentWindowHeight);
 	}
 
 	TRM_Renderer_destroyPass(drawPass);
 	TRM_Renderer_destroyPass(computePass);
-
-	TRM_Renderer_destroyResource(uniformBuffer);
-	TRM_Renderer_destroyResource(vertexBuffer);
-	TRM_Renderer_destroyResource(colorImage);
-	TRM_Renderer_destroyResource(depthImage);
-	TRM_Renderer_destroyResource(texture);
-	TRM_Renderer_destroyResource(bufferUpload);
 
 	stbi_image_free(pTextureData);
 
@@ -328,3 +387,4 @@ int main(void)
 
 	return 0;
 }
+

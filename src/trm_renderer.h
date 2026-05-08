@@ -9,9 +9,13 @@
 #include <stdbool.h>
 
 #define TRM_RENDERER_SWAPCHAIN_IMAGE UINT32_MAX
-#define TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT UINT32_MAX
-#define TRM_RENDERER_SWAPCHAIN_WIDTH UINT32_MAX
-#define TRM_RENDERER_SWAPCHAIN_HEIGHT UINT32_MAX
+#define TRM_RENDERER_SWAPCHAIN_IMAGE_FORMAT UINT32_MAX // query instead
+
+enum TRM_Renderer_ResourceType
+{
+	TRM_RENDERER_RESOURCE_TYPE_BUFFER,
+	TRM_RENDERER_RESOURCE_TYPE_IMAGE
+};
 
 enum TRM_Renderer_BufferUsage
 {
@@ -45,6 +49,16 @@ struct TRM_Renderer_ImageCreateInfo
 	uint32_t height;
 	VkFormat format;
 	enum TRM_Renderer_ImageUsage usage;
+};
+
+struct TRM_Renderer_ResourceCreateInfo
+{
+	enum TRM_Renderer_ResourceType type;
+	union
+	{
+		struct TRM_Renderer_BufferCreateInfo buffer;
+		struct TRM_Renderer_ImageCreateInfo image;
+	} info;
 };
 
 enum TRM_Renderer_DescriptorType
@@ -91,8 +105,6 @@ struct TRM_Renderer_DrawPassCreateInfo
 	void* pVertexCode;
 	uint32_t fragmentCodeSize;
 	void* pFragmentCode;
-	uint32_t width;
-	uint32_t height;
 	uint32_t colorOutputImageCount;
 	VkFormat* pColorOutputImageFormats;
 	VkFormat depthOutputFormat;
@@ -196,9 +208,7 @@ void TRM_Renderer_beginFrame(void);
 
 void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances, uint32_t windowWidth, uint32_t windowHeight);
 
-void TRM_Renderer_createBuffer(struct TRM_Renderer_BufferCreateInfo info, uint32_t* pHandle);
-
-void TRM_Renderer_createImage(struct TRM_Renderer_ImageCreateInfo info, uint32_t* pHandle);
+void TRM_Renderer_createResource(struct TRM_Renderer_ResourceCreateInfo info, uint32_t* pHandle);
 
 void TRM_Renderer_destroyResource(uint32_t handle);
 

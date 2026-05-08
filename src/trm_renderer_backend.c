@@ -79,6 +79,8 @@ struct TRM_Renderer_Backend_Resource
 {
 	enum TRM_Renderer_Backend_ResourceType type;
 	struct TRM_Renderer_Backend_ResourceState state;
+	bool toDelete;
+	uint32_t lastUsedSubmitionIndex;
 	union
 	{
 		struct TRM_Renderer_Backend_BufferResourceInfo buffer;
@@ -184,6 +186,7 @@ struct TRM_Renderer_Backend_FrameInfo
 	VkCommandBuffer commandBuffer;
 	VkFence commandBufferExecutedFence;
 	VkSemaphore imageAvailableSemaphore;
+	VkSemaphore timelineSemaphore;
 	uint32_t descriptorSetCount;
 	VkDescriptorSet descriptorSets[TRM_RENDERER_MAX_DESCRIPTOR_SET_PER_FRAME_COUNT]; // descriptor sets are created/destroyed each frame (BAD)
 	uint32_t framebufferCount;
@@ -215,9 +218,11 @@ struct TRM_Renderer_Backend_State
 	struct TRM_Renderer_Backend_SwapchainImageInfo* pSwapchainImageInfos;
 	struct TRM_Renderer_Backend_FrameInfo* pFrameInfos;
 	uint32_t frameIndex;
+	uint64_t submitionIndex;
 	VkSampler globalSampler;
-	struct TRM_Arena resources;
-	struct TRM_Arena passes;
+	struct TRM_Arena resourcePool;
+	struct TRM_LinkedList resourceHandles;
+	struct TRM_Arena passPool;
 };
 
 static struct TRM_Renderer_Backend_State* pState = NULL;
@@ -351,10 +356,14 @@ static void TRM_Renderer_Backend_createDevice(
 		"VK_KHR_swapchain"
 	};
 
+	VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {0};
+	timelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+	timelineFeatures.timelineSemaphore = VK_TRUE;
+
 	VkDeviceCreateInfo deviceCreateInfo = {0};
 	deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	deviceCreateInfo.pNext = NULL;
-	deviceCreateInfo.flags = 0;
+	deviceCreateInfo.pNext = &timelineFeatures;
 	deviceCreateInfo.queueCreateInfoCount = 1;
 	deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
 	deviceCreateInfo.enabledLayerCount = 0;
@@ -745,6 +754,25 @@ static void TRM_Renderer_Backend_createSemaphore(const VkAllocationCallbacks* pA
 	}
 }
 
+static void TRM_Renderer_Backend_createTimelineSemaphore(const VkAllocationCallbacks* pAllocator, VkDevice device, VkSemaphore* pSemaphore)
+{
+	VkSemaphoreTypeCreateInfo timelineInfo = {0};
+	timelineInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+	timelineInfo.pNext = NULL;
+	timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+	timelineInfo.initialValue = 0;
+
+	VkSemaphoreCreateInfo semaphoreCreateInfo = {0};
+	semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+	semaphoreCreateInfo.pNext = &timelineInfo;
+	semaphoreCreateInfo.flags = 0;
+
+	if(vkCreateSemaphore(device, &semaphoreCreateInfo, pAllocator, pSemaphore) != VK_SUCCESS)
+	{
+		exit(EXIT_FAILURE);
+	}
+}
+
 static void TRM_Renderer_Backend_allocateCommandBuffer(VkCommandPool commandPool, VkDevice device, VkCommandBuffer* pCommandBuffer)
 {
 	VkCommandBufferAllocateInfo commandBufferAllocateInfo = {0};
@@ -1118,15 +1146,15 @@ static void TRM_Renderer_Backend_createGraphicsPipeline(
 	TRM_Memory_deallocate(pColorBlendAttachments);
 }
 
-static uint32_t TRM_Renderer_Backend_translateResource(uint32_t resource, uint32_t swapchainImageIndex)
+static uint32_t TRM_Renderer_Backend_translateResource(uint32_t handle, uint32_t swapchainImageIndex)
 {
-	if(resource == TRM_RENDERER_SWAPCHAIN_IMAGE)
+	if(handle == TRM_RENDERER_SWAPCHAIN_IMAGE)
 	{
 		return pState->pSwapchainImageInfos[swapchainImageIndex].colorImage;
 	}
 	
 	struct TRM_Renderer_Backend_Resource* pResource = NULL;
-	TRM_Arena_get(resource, pState->resources, (void**)&pResource);
+	TRM_Arena_get(handle, pState->resourcePool, (void**)&pResource);
 	if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER_INDIRECTION)
 	{
 		if(pResource->info.bufferIndirection.hostVisible)
@@ -1136,7 +1164,7 @@ static uint32_t TRM_Renderer_Backend_translateResource(uint32_t resource, uint32
 		return pResource->info.bufferIndirection.info.deviceLocal.buffer;
 	}
 
-	return resource;
+	return handle;
 }
 
 static VkFormat TRM_Renderer_Backend_translateFormat(VkFormat format)
@@ -1147,26 +1175,6 @@ static VkFormat TRM_Renderer_Backend_translateFormat(VkFormat format)
 	}
 
 	return format;
-}
-
-static VkFormat TRM_Renderer_Backend_translateWidth(uint32_t width)
-{
-	if(width == TRM_RENDERER_SWAPCHAIN_WIDTH)
-	{
-		return pState->swapchainWidth;
-	}
-
-	return width;
-}
-
-static VkFormat TRM_Renderer_Backend_translateHeight(uint32_t height)
-{
-	if(height == TRM_RENDERER_SWAPCHAIN_HEIGHT)
-	{
-		return pState->swapchainHeight;
-	}
-
-	return height;
 }
 
 // i'm not sure it covers all the cases, but we should be good for now
@@ -1209,6 +1217,237 @@ static VkDescriptorType TRM_Renderer_Backend_convertDescriptorType(enum TRM_Rend
 	case TRM_RENDERER_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	default: exit(EXIT_FAILURE);
 	}
+}
+
+static void TRM_Renderer_Backend_createResource(struct TRM_Renderer_ResourceCreateInfo info, uint32_t* pHandle)
+{
+	if(info.type == TRM_RENDERER_RESOURCE_TYPE_BUFFER)
+	{
+		VkBufferUsageFlags bufferUsage = 0;
+
+		if((info.info.buffer.usage & TRM_RENDERER_BUFFER_USAGE_UNIFORM) != 0)
+		{
+			bufferUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		}
+
+		if((info.info.buffer.usage & TRM_RENDERER_BUFFER_USAGE_STORAGE) != 0)
+		{
+			bufferUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		}
+
+		if((info.info.buffer.usage & TRM_RENDERER_BUFFER_USAGE_TRANSFER_SRC) != 0)
+		{
+			bufferUsage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		}
+
+		if((info.info.buffer.usage & TRM_RENDERER_BUFFER_USAGE_TRANSFER_DST) != 0)
+		{
+			bufferUsage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		}
+
+		if((info.info.buffer.usage & TRM_RENDERER_BUFFER_USAGE_VERTEX) != 0)
+		{
+			bufferUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		}
+
+		struct TRM_Renderer_Backend_Resource bufferIndirection = {0};
+		bufferIndirection.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER_INDIRECTION;
+		bufferIndirection.info.bufferIndirection.hostVisible = info.info.buffer.hostVisible;
+		bufferIndirection.toDelete = false;
+		bufferIndirection.lastUsedSubmitionIndex = 0;
+
+		if(info.info.buffer.hostVisible)
+		{
+			for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_BACKEND_FRAME_COUNT; ++frameIndex)
+			{
+				struct TRM_Renderer_Backend_Resource resource = {0};
+				resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER;
+				resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+				resource.state.access = VK_ACCESS_NONE;
+
+				TRM_Renderer_Backend_createBuffer(
+					pState->pAllocator,
+					pState->device,
+					info.info.buffer.sizeInBytes,
+					bufferUsage,
+					pState->queueFamilyIndex,
+					&resource.info.buffer.buffer);
+
+				TRM_Renderer_Backend_allocateMemoryForBuffer(
+					pState->pAllocator,
+					pState->physicalDevice,
+					pState->device,
+					resource.info.buffer.buffer,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					&resource.info.buffer.memory);
+
+				vkBindBufferMemory(
+					pState->device,
+					resource.info.buffer.buffer,
+					resource.info.buffer.memory,
+					0);
+
+				uint32_t buffer = 0;
+				TRM_Arena_add((void*)&resource, &pState->resourcePool, &buffer);
+				bufferIndirection.info.bufferIndirection.info.hostVisible.buffers[frameIndex] = buffer;
+			}
+		}
+		else
+		{
+			struct TRM_Renderer_Backend_Resource resource = {0};
+			resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER;
+			resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+			resource.state.access = VK_ACCESS_NONE;
+
+			TRM_Renderer_Backend_createBuffer(
+				pState->pAllocator,
+				pState->device,
+				info.info.buffer.sizeInBytes,
+				bufferUsage,
+				pState->queueFamilyIndex,
+				&resource.info.buffer.buffer);
+
+			TRM_Renderer_Backend_allocateMemoryForBuffer(
+				pState->pAllocator,
+				pState->physicalDevice,
+				pState->device,
+				resource.info.buffer.buffer,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				&resource.info.buffer.memory);
+
+			vkBindBufferMemory(
+				pState->device,
+				resource.info.buffer.buffer,
+				resource.info.buffer.memory,
+				0);
+
+			uint32_t buffer = 0;
+			TRM_Arena_add((void*)&resource, &pState->resourcePool, &buffer);
+			bufferIndirection.info.bufferIndirection.info.deviceLocal.buffer = buffer;
+		}
+
+		TRM_Arena_add((void*)&bufferIndirection, &pState->resourcePool, pHandle);
+	}
+	else
+	{
+		VkImageAspectFlags imageAspect = 0;
+		VkImageUsageFlags imageUsage = 0;
+
+		if((info.info.image.usage & TRM_RENDERER_IMAGE_USAGE_COLOR_ATTACHMENT) != 0)
+		{
+			imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
+		}
+
+		if((info.info.image.usage & TRM_RENDERER_IMAGE_USAGE_DEPTH_ATTACHMENT) != 0)
+		{
+			imageUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+			imageAspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
+		}
+
+		if((info.info.image.usage & TRM_RENDERER_IMAGE_USAGE_SAMPLED) != 0)
+		{
+			imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
+		}
+
+		if((info.info.image.usage & TRM_RENDERER_IMAGE_USAGE_STORAGE) != 0)
+		{
+			imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
+			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
+		}
+
+		if((info.info.image.usage & TRM_RENDERER_IMAGE_USAGE_TRANSFER_SRC) != 0)
+		{
+			imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
+		}
+
+		if((info.info.image.usage & TRM_RENDERER_IMAGE_USAGE_TRANSFER_DST) != 0)
+		{
+			imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
+		}
+
+		struct TRM_Renderer_Backend_Resource resource = {0};
+		resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE;
+		resource.toDelete = false;
+		resource.lastUsedSubmitionIndex = 0;
+		resource.info.image.aspect = imageAspect;
+		resource.info.image.swapchainImage = false;
+		resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		resource.state.access = VK_ACCESS_NONE;
+		resource.state.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		TRM_Renderer_Backend_createImage(
+			pState->pAllocator,
+			pState->device,
+			info.info.image.width,
+			info.info.image.height,
+			TRM_Renderer_Backend_translateFormat(info.info.image.format),
+			resource.state.layout,
+			imageUsage,
+			pState->queueFamilyIndex,
+			&resource.info.image.image);
+
+		TRM_Renderer_Backend_allocateMemoryForImage(
+			pState->pAllocator,
+			pState->physicalDevice,
+			pState->device,
+			resource.info.image.image,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&resource.info.image.memory);
+
+		vkBindImageMemory(pState->device, resource.info.image.image, resource.info.image.memory, 0);
+
+		TRM_Renderer_Backend_createImageView(
+			pState->pAllocator,
+			pState->device,
+			resource.info.image.image,
+			TRM_Renderer_Backend_translateFormat(info.info.image.format),
+			resource.info.image.aspect,
+			&resource.info.image.imageView);
+
+		TRM_Arena_add((void*)&resource, &pState->resourcePool, pHandle);
+	}
+
+}
+
+static void TRM_Renderer_Backend_destroyResource(uint32_t handle)
+{
+	struct TRM_Renderer_Backend_Resource* pResource = NULL;
+	TRM_Arena_get(handle, pState->resourcePool, (void**)&pResource);
+
+	if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER_INDIRECTION)
+	{
+		if(pResource->info.bufferIndirection.hostVisible)
+		{
+			for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_BACKEND_FRAME_COUNT; ++frameIndex)
+			{
+				struct TRM_Renderer_Backend_Resource* pBuffer = NULL;
+				TRM_Arena_get(pResource->info.bufferIndirection.info.hostVisible.buffers[frameIndex], pState->resourcePool, (void**)&pBuffer);
+				vkDestroyBuffer(pState->device, pBuffer->info.buffer.buffer, pState->pAllocator);
+				vkFreeMemory(pState->device, pBuffer->info.buffer.memory, pState->pAllocator);
+				TRM_Arena_remove(pResource->info.bufferIndirection.info.hostVisible.buffers[frameIndex], &pState->resourcePool);
+			}
+		}
+		else
+		{
+			struct TRM_Renderer_Backend_Resource* pBuffer = NULL;
+			TRM_Arena_get(pResource->info.bufferIndirection.info.deviceLocal.buffer, pState->resourcePool, (void**)&pBuffer);
+			vkDestroyBuffer(pState->device, pBuffer->info.buffer.buffer, pState->pAllocator);
+			vkFreeMemory(pState->device, pBuffer->info.buffer.memory, pState->pAllocator);
+			TRM_Arena_remove(pResource->info.bufferIndirection.info.deviceLocal.buffer, &pState->resourcePool);
+		}
+	}
+	else
+	{
+		vkDestroyImage(pState->device, pResource->info.image.image, pState->pAllocator);
+		vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
+		vkFreeMemory(pState->device, pResource->info.image.memory, pState->pAllocator);
+	}
+
+	TRM_Arena_remove(handle, &pState->resourcePool);
 }
 
 // converts an API PassInstance into internal an PassInstance, it prepares command parameters and expected resource states for this pass instance
@@ -1254,10 +1493,10 @@ static void TRM_Renderer_Backend_createPassInstances(
 			{
 				uint32_t resource = pBackendPassInstance->pBindings[bindingIndex];
 				struct TRM_Renderer_Backend_Resource* pResource = NULL;
-				TRM_Arena_get(resource, pState->resources, (void**)&pResource);
+				TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 				struct TRM_Renderer_Backend_ResourceState* pResourceState = &pBackendPassInstance->pResourceStates[resource];
 				struct TRM_Renderer_Backend_Pass* pPass = NULL;
-				TRM_Arena_get(pBackendPassInstance->info.dispatch.pass, pState->passes, (void**)&pPass);
+				TRM_Arena_get(pBackendPassInstance->info.dispatch.pass, pState->passPool, (void**)&pPass);
 
 				VkAccessFlags accessFlags =
 					(pPass->info.dispatch.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_RENDERER_SHADER_ACCESS_FLAG_READ) != 0 ?
@@ -1313,8 +1552,8 @@ static void TRM_Renderer_Backend_createPassInstances(
 			}
 
 			pBackendPassInstance->info.draw.pass = pPassInstance->info.draw.pass; // translate
-			pBackendPassInstance->info.draw.width = TRM_Renderer_Backend_translateWidth(pPassInstance->info.draw.width);
-			pBackendPassInstance->info.draw.height = TRM_Renderer_Backend_translateHeight(pPassInstance->info.draw.height);
+			pBackendPassInstance->info.draw.width = pPassInstance->info.draw.width;
+			pBackendPassInstance->info.draw.height = pPassInstance->info.draw.height;
 			pBackendPassInstance->info.draw.vertexCount = pPassInstance->info.draw.vertexCount;
 			pBackendPassInstance->info.draw.clearColorCount = pPassInstance->info.draw.colorOutputImageCount + 1;
 			
@@ -1351,13 +1590,13 @@ static void TRM_Renderer_Backend_createPassInstances(
 			TRM_Renderer_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 
 			struct TRM_Renderer_Backend_Pass* pPass = NULL;
-			TRM_Arena_get(pBackendPassInstance->info.draw.pass, pState->passes, (void**)&pPass);
+			TRM_Arena_get(pBackendPassInstance->info.draw.pass, pState->passPool, (void**)&pPass);
 
 			for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pPassInstance->info.draw.bindingCount; ++additionalBindingIndex)
 			{
 				uint32_t resource = pBackendPassInstance->pBindings[additionalBindingsOffset + additionalBindingIndex];
 				struct TRM_Renderer_Backend_Resource* pResource = NULL;
-				TRM_Arena_get(resource, pState->resources, (void**)&pResource);
+				TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 				pResourceState = &pBackendPassInstance->pResourceStates[resource];
 
 				VkAccessFlags accessFlags =
@@ -1388,12 +1627,12 @@ static void TRM_Renderer_Backend_createPassInstances(
 			for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pPassInstance->info.draw.colorOutputImageCount; ++colorOutputImageIndex)
 			{
 				struct TRM_Renderer_Backend_Resource* pColorImage = NULL;
-				TRM_Arena_get(pBackendPassInstance->pBindings[colorAttachmentsOffset + colorOutputImageIndex], pState->resources, (void**)&pColorImage);
+				TRM_Arena_get(pBackendPassInstance->pBindings[colorAttachmentsOffset + colorOutputImageIndex], pState->resourcePool, (void**)&pColorImage);
 				pAttachments[colorOutputImageIndex] = pColorImage->info.image.imageView;
 			}
 
 			struct TRM_Renderer_Backend_Resource* pDepthImage = NULL;
-			TRM_Arena_get(pBackendPassInstance->pBindings[depthAttachmentOffset], pState->resources, (void**)&pDepthImage);
+			TRM_Arena_get(pBackendPassInstance->pBindings[depthAttachmentOffset], pState->resourcePool, (void**)&pDepthImage);
 			pAttachments[pPassInstance->info.draw.colorOutputImageCount] = pDepthImage->info.image.imageView;
 
 			TRM_Renderer_Backend_createFramebuffer(
@@ -1423,8 +1662,8 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->pBindings[1] = 
 				TRM_Renderer_Backend_translateResource(pPassInstance->info.imageToImageCopy.dstImage, swapchainImageIndex);
 
-			pBackendPassInstance->info.imageToImageCopy.width = TRM_Renderer_Backend_translateWidth(pPassInstance->info.imageToImageCopy.width);
-			pBackendPassInstance->info.imageToImageCopy.height = TRM_Renderer_Backend_translateHeight(pPassInstance->info.imageToImageCopy.height);
+			pBackendPassInstance->info.imageToImageCopy.width = pPassInstance->info.imageToImageCopy.width;
+			pBackendPassInstance->info.imageToImageCopy.height = pPassInstance->info.imageToImageCopy.height;
 
 			uint32_t srcImage = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
@@ -1453,8 +1692,8 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->pBindings[1] = 
 				TRM_Renderer_Backend_translateResource(pPassInstance->info.bufferToImageCopy.dstImage, swapchainImageIndex);
 
-			pBackendPassInstance->info.bufferToImageCopy.width = TRM_Renderer_Backend_translateWidth(pPassInstance->info.bufferToImageCopy.width);
-			pBackendPassInstance->info.bufferToImageCopy.height = TRM_Renderer_Backend_translateHeight(pPassInstance->info.bufferToImageCopy.height);
+			pBackendPassInstance->info.bufferToImageCopy.width = pPassInstance->info.bufferToImageCopy.width;
+			pBackendPassInstance->info.bufferToImageCopy.height = pPassInstance->info.bufferToImageCopy.height;
 
 			uint32_t srcBuffer = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
@@ -1504,10 +1743,10 @@ static void TRM_Renderer_Backend_createPassInstances(
 			pBackendPassInstance->pBindings[1] =
 				TRM_Renderer_Backend_translateResource(pPassInstance->info.blit.dstImage, swapchainImageIndex);
 
-			pBackendPassInstance->info.blit.srcWidth = TRM_Renderer_Backend_translateWidth(pPassInstance->info.blit.srcWidth);
-			pBackendPassInstance->info.blit.srcHeight = TRM_Renderer_Backend_translateHeight(pPassInstance->info.blit.srcHeight);
-			pBackendPassInstance->info.blit.dstWidth = TRM_Renderer_Backend_translateWidth(pPassInstance->info.blit.dstWidth);
-			pBackendPassInstance->info.blit.dstHeight = TRM_Renderer_Backend_translateHeight(pPassInstance->info.blit.dstHeight);
+			pBackendPassInstance->info.blit.srcWidth = pPassInstance->info.blit.srcWidth;
+			pBackendPassInstance->info.blit.srcHeight = pPassInstance->info.blit.srcHeight;
+			pBackendPassInstance->info.blit.dstWidth = pPassInstance->info.blit.dstWidth;
+			pBackendPassInstance->info.blit.dstHeight = pPassInstance->info.blit.dstHeight;
 
 			uint32_t srcImage = pBackendPassInstance->pBindings[0];
 			uint32_t dstImage = pBackendPassInstance->pBindings[1];
@@ -1569,7 +1808,7 @@ static void TRM_Renderer_Backend_updateDescriptorSets(uint32_t passInstanceCount
 			struct TRM_Renderer_Backend_Pass* pPass = NULL;
 			if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_DISPATCH)
 			{
-				TRM_Arena_get(pPassInstance->info.dispatch.pass, pState->passes, (void**)&pPass);
+				TRM_Arena_get(pPassInstance->info.dispatch.pass, pState->passPool, (void**)&pPass);
 				pDescriptorSet = 
 					&pState->pFrameInfos[pState->frameIndex].descriptorSets[pState->pFrameInfos[pState->frameIndex].descriptorSetCount];
 				TRM_Renderer_Backend_allocateDescriptorSet(
@@ -1581,7 +1820,7 @@ static void TRM_Renderer_Backend_updateDescriptorSets(uint32_t passInstanceCount
 			}
 			else
 			{
-				TRM_Arena_get(pPassInstance->info.draw.pass, pState->passes, (void**)&pPass);
+				TRM_Arena_get(pPassInstance->info.draw.pass, pState->passPool, (void**)&pPass);
 				pDescriptorSet = 
 					&pState->pFrameInfos[pState->frameIndex].descriptorSets[pState->pFrameInfos[pState->frameIndex].descriptorSetCount];
 				TRM_Renderer_Backend_allocateDescriptorSet(
@@ -1598,7 +1837,7 @@ static void TRM_Renderer_Backend_updateDescriptorSets(uint32_t passInstanceCount
 				VkDescriptorType descriptorType;
 				const uint32_t resource = pPassInstance->pBindings[bindingIndex + bindingOffset];
 				struct TRM_Renderer_Backend_Resource* pResource = NULL;
-				TRM_Arena_get(resource, pState->resources, (void**)&pResource);
+				TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
 				descriptorType = pPassInstance->type == TRM_RENDERER_PASS_TYPE_DISPATCH ?
 					TRM_Renderer_Backend_convertDescriptorType(pPass->info.dispatch.pDescriptorInfos[bindingIndex].descriptorType) :
@@ -1663,6 +1902,7 @@ static void TRM_Renderer_Backend_updateDescriptorSets(uint32_t passInstanceCount
 static void TRM_Renderer_Backend_fillCommandBuffer(
 	uint32_t passInstanceCount,
 	struct TRM_Renderer_Backend_PassInstance* pPassInstances,
+	bool skip,
 	VkCommandBuffer commandBuffer)
 {
 	vkResetCommandBuffer(commandBuffer, 0);
@@ -1678,341 +1918,344 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 		exit(EXIT_FAILURE);
 	}
 
-	for(uint32_t passInstanceIndex = 0; passInstanceIndex < passInstanceCount; ++passInstanceIndex)
+	if(!skip)
 	{
-		VkPipelineStageFlags srcStageFlags = 0;
-		VkPipelineStageFlags dstStageFlags = 0;
-		struct TRM_DynamicArray bufferMemoryBarriers;
-		struct TRM_DynamicArray imageMemoryBarriers;
-
-		TRM_DynamicArray_create(sizeof(VkBufferMemoryBarrier), &bufferMemoryBarriers);
-		TRM_DynamicArray_create(sizeof(VkImageMemoryBarrier), &imageMemoryBarriers);
-
-		const struct TRM_Renderer_Backend_PassInstance* pPassInstance = &pPassInstances[passInstanceIndex];
-
-		// retrieves all barriers (memory + execution) for this pass for each resource
-		bool needBarrier = false;
-		for(uint32_t bindingIndex = 0; bindingIndex < pPassInstance->bindingCount; ++bindingIndex)
+		for(uint32_t passInstanceIndex = 0; passInstanceIndex < passInstanceCount; ++passInstanceIndex)
 		{
-			const uint32_t resource = pPassInstance->pBindings[bindingIndex];
-			struct TRM_Renderer_Backend_Resource* pResource = NULL;
-			TRM_Arena_get(resource, pState->resources, (void**)&pResource);
+			VkPipelineStageFlags srcStageFlags = 0;
+			VkPipelineStageFlags dstStageFlags = 0;
+			struct TRM_DynamicArray bufferMemoryBarriers;
+			struct TRM_DynamicArray imageMemoryBarriers;
 
-			struct TRM_Renderer_Backend_ResourceState* pPreviousResourceState = &pResource->state;
-			struct TRM_Renderer_Backend_ResourceState* pCurrentResourceState = &pPassInstance->pResourceStates[resource];
+			TRM_DynamicArray_create(sizeof(VkBufferMemoryBarrier), &bufferMemoryBarriers);
+			TRM_DynamicArray_create(sizeof(VkImageMemoryBarrier), &imageMemoryBarriers);
 
-			const uint32_t lastWasWrite = (pPreviousResourceState->access & (
-				VK_ACCESS_SHADER_WRITE_BIT |
-				VK_ACCESS_TRANSFER_WRITE_BIT |
-				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT));
+			const struct TRM_Renderer_Backend_PassInstance* pPassInstance = &pPassInstances[passInstanceIndex];
 
-			const uint32_t currentIsWrite = (pCurrentResourceState->access & (
-				VK_ACCESS_SHADER_WRITE_BIT |
-				VK_ACCESS_TRANSFER_WRITE_BIT |
-				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT));
-
-			const bool readAfterWrite = (lastWasWrite && !currentIsWrite);
-			const bool writeAfterRead = (!lastWasWrite && currentIsWrite);
-			const bool writeAfterWrite = (lastWasWrite && currentIsWrite);
-			const bool layoutChanged = (pPreviousResourceState->layout != pCurrentResourceState->layout);
-
-			if(layoutChanged || readAfterWrite || writeAfterRead || writeAfterWrite)
+			// retrieves all barriers (memory + execution) for this pass for each resource
+			bool needBarrier = false;
+			for(uint32_t bindingIndex = 0; bindingIndex < pPassInstance->bindingCount; ++bindingIndex)
 			{
-				needBarrier = true;
+				const uint32_t resource = pPassInstance->pBindings[bindingIndex];
+				struct TRM_Renderer_Backend_Resource* pResource = NULL;
+				TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-				srcStageFlags |= pPreviousResourceState->stage;
-				dstStageFlags |= pCurrentResourceState->stage;
+				struct TRM_Renderer_Backend_ResourceState* pPreviousResourceState = &pResource->state;
+				struct TRM_Renderer_Backend_ResourceState* pCurrentResourceState = &pPassInstance->pResourceStates[resource];
 
-				if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE)
+				const uint32_t lastWasWrite = (pPreviousResourceState->access & (
+					VK_ACCESS_SHADER_WRITE_BIT |
+					VK_ACCESS_TRANSFER_WRITE_BIT |
+					VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+					VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT));
+
+				const uint32_t currentIsWrite = (pCurrentResourceState->access & (
+					VK_ACCESS_SHADER_WRITE_BIT |
+					VK_ACCESS_TRANSFER_WRITE_BIT |
+					VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+					VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT));
+
+				const bool readAfterWrite = (lastWasWrite && !currentIsWrite);
+				const bool writeAfterRead = (!lastWasWrite && currentIsWrite);
+				const bool writeAfterWrite = (lastWasWrite && currentIsWrite);
+				const bool layoutChanged = (pPreviousResourceState->layout != pCurrentResourceState->layout);
+
+				if(layoutChanged || readAfterWrite || writeAfterRead || writeAfterWrite)
 				{
-					VkImageMemoryBarrier imageMemoryBarrier = {0};
-					imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-					imageMemoryBarrier.pNext = NULL;
+					needBarrier = true;
 
-					if(readAfterWrite || writeAfterWrite)
+					srcStageFlags |= pPreviousResourceState->stage;
+					dstStageFlags |= pCurrentResourceState->stage;
+
+					if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE)
 					{
-						imageMemoryBarrier.srcAccessMask = pPreviousResourceState->access;
-						imageMemoryBarrier.dstAccessMask = pCurrentResourceState->access;
+						VkImageMemoryBarrier imageMemoryBarrier = {0};
+						imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+						imageMemoryBarrier.pNext = NULL;
+
+						if(readAfterWrite || writeAfterWrite)
+						{
+							imageMemoryBarrier.srcAccessMask = pPreviousResourceState->access;
+							imageMemoryBarrier.dstAccessMask = pCurrentResourceState->access;
+						}
+						else
+						{
+							imageMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
+							imageMemoryBarrier.dstAccessMask = VK_ACCESS_NONE;
+						}
+
+						imageMemoryBarrier.oldLayout = pPreviousResourceState->layout;
+						imageMemoryBarrier.newLayout = pCurrentResourceState->layout;
+						imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+						imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+						imageMemoryBarrier.image = pResource->info.image.image;
+						imageMemoryBarrier.subresourceRange.aspectMask = pResource->info.image.aspect;
+						imageMemoryBarrier.subresourceRange.layerCount = 1;
+						imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
+						imageMemoryBarrier.subresourceRange.levelCount = 1;
+						imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
+
+						TRM_DynamicArray_push(&imageMemoryBarrier, &imageMemoryBarriers);
 					}
-					else
+					else if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER)
 					{
-						imageMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
-						imageMemoryBarrier.dstAccessMask = VK_ACCESS_NONE;
+						VkBufferMemoryBarrier bufferMemoryBarrier = {0};
+						bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+						bufferMemoryBarrier.pNext = NULL;
+
+						if(readAfterWrite || writeAfterWrite)
+						{
+							bufferMemoryBarrier.srcAccessMask = pPreviousResourceState->access;
+							bufferMemoryBarrier.dstAccessMask = pCurrentResourceState->access;
+						}
+						else
+						{
+							bufferMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
+							bufferMemoryBarrier.dstAccessMask = VK_ACCESS_NONE;
+						}
+
+						bufferMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+						bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+						bufferMemoryBarrier.buffer = pResource->info.buffer.buffer;
+						bufferMemoryBarrier.offset = 0;
+						bufferMemoryBarrier.size = VK_WHOLE_SIZE;
+
+						TRM_DynamicArray_push(&bufferMemoryBarrier, &bufferMemoryBarriers);
 					}
 
-					imageMemoryBarrier.oldLayout = pPreviousResourceState->layout;
-					imageMemoryBarrier.newLayout = pCurrentResourceState->layout;
-					imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					imageMemoryBarrier.image = pResource->info.image.image;
-					imageMemoryBarrier.subresourceRange.aspectMask = pResource->info.image.aspect;
-					imageMemoryBarrier.subresourceRange.layerCount = 1;
-					imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
-					imageMemoryBarrier.subresourceRange.levelCount = 1;
-					imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
-
-					TRM_DynamicArray_push(&imageMemoryBarrier, &imageMemoryBarriers);
+					*pPreviousResourceState = *pCurrentResourceState;
 				}
-				else if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER)
-				{
-					VkBufferMemoryBarrier bufferMemoryBarrier = {0};
-					bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-					bufferMemoryBarrier.pNext = NULL;
-
-					if(readAfterWrite || writeAfterWrite)
-					{
-						bufferMemoryBarrier.srcAccessMask = pPreviousResourceState->access;
-						bufferMemoryBarrier.dstAccessMask = pCurrentResourceState->access;
-					}
-					else
-					{
-						bufferMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
-						bufferMemoryBarrier.dstAccessMask = VK_ACCESS_NONE;
-					}
-
-					bufferMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					bufferMemoryBarrier.buffer = pResource->info.buffer.buffer;
-					bufferMemoryBarrier.offset = 0;
-					bufferMemoryBarrier.size = VK_WHOLE_SIZE;
-
-					TRM_DynamicArray_push(&bufferMemoryBarrier, &bufferMemoryBarriers);
-				}
-
-				*pPreviousResourceState = *pCurrentResourceState;
 			}
-		}
 
-		// emit commands
-		if(needBarrier == 1)
-		{
-			vkCmdPipelineBarrier(
-				commandBuffer,
-				srcStageFlags,
-				dstStageFlags,
-				0,
-				0,
-				NULL,
-				bufferMemoryBarriers.elementCount,
-				(VkBufferMemoryBarrier*)bufferMemoryBarriers.pData,
-				imageMemoryBarriers.elementCount,
-				(VkImageMemoryBarrier*)imageMemoryBarriers.pData);
-		}
+			// emit commands
+			if(needBarrier == 1)
+			{
+				vkCmdPipelineBarrier(
+					commandBuffer,
+					srcStageFlags,
+					dstStageFlags,
+					0,
+					0,
+					NULL,
+					bufferMemoryBarriers.elementCount,
+					(VkBufferMemoryBarrier*)bufferMemoryBarriers.pData,
+					imageMemoryBarriers.elementCount,
+					(VkImageMemoryBarrier*)imageMemoryBarriers.pData);
+			}
 
-		TRM_DynamicArray_destroy(&bufferMemoryBarriers);
-		TRM_DynamicArray_destroy(&imageMemoryBarriers);
+			TRM_DynamicArray_destroy(&bufferMemoryBarriers);
+			TRM_DynamicArray_destroy(&imageMemoryBarriers);
 
-		if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_DISPATCH)
-		{
-			struct TRM_Renderer_Backend_Pass* pPass = NULL;
-			TRM_Arena_get(pPassInstance->info.dispatch.pass, pState->passes, (void**)&pPass);
+			if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_DISPATCH)
+			{
+				struct TRM_Renderer_Backend_Pass* pPass = NULL;
+				TRM_Arena_get(pPassInstance->info.dispatch.pass, pState->passPool, (void**)&pPass);
 
-			vkCmdBindDescriptorSets(
-				commandBuffer,
-				VK_PIPELINE_BIND_POINT_COMPUTE,
-				pPass->info.dispatch.pipelineLayout,
-				0,
-				1,
-				&pState->pFrameInfos[pState->frameIndex].descriptorSets[pPassInstance->info.dispatch.descriptorSet],
-				0,
-				NULL);
+				vkCmdBindDescriptorSets(
+					commandBuffer,
+					VK_PIPELINE_BIND_POINT_COMPUTE,
+					pPass->info.dispatch.pipelineLayout,
+					0,
+					1,
+					&pState->pFrameInfos[pState->frameIndex].descriptorSets[pPassInstance->info.dispatch.descriptorSet],
+					0,
+					NULL);
 
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pPass->info.dispatch.pipeline);
+				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pPass->info.dispatch.pipeline);
 
-			vkCmdDispatch(
-				commandBuffer,
-				pPassInstance->info.dispatch.groupCountX,
-				pPassInstance->info.dispatch.groupCountY,
-				pPassInstance->info.dispatch.groupCountZ);
-		}
-		else if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_DRAW)
-		{
-			struct TRM_Renderer_Backend_Pass* pPass = NULL;
-			TRM_Arena_get(pPassInstance->info.draw.pass, pState->passes, (void**)&pPass);
+				vkCmdDispatch(
+					commandBuffer,
+					pPassInstance->info.dispatch.groupCountX,
+					pPassInstance->info.dispatch.groupCountY,
+					pPassInstance->info.dispatch.groupCountZ);
+			}
+			else if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_DRAW)
+			{
+				struct TRM_Renderer_Backend_Pass* pPass = NULL;
+				TRM_Arena_get(pPassInstance->info.draw.pass, pState->passPool, (void**)&pPass);
 
-			VkRenderPassBeginInfo renderPassBeginInfo = {0};
-			renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-			renderPassBeginInfo.pNext = NULL;
-			renderPassBeginInfo.renderPass = pPass->info.draw.renderPass;
-			renderPassBeginInfo.framebuffer = pState->pFrameInfos[pState->frameIndex].framebuffers[pPassInstance->info.draw.framebuffer];
-			renderPassBeginInfo.renderArea.offset.x = 0;
-			renderPassBeginInfo.renderArea.offset.y = 0;
-			renderPassBeginInfo.renderArea.extent.width = pPassInstance->info.draw.width;
-			renderPassBeginInfo.renderArea.extent.height = pPassInstance->info.draw.height;
-			renderPassBeginInfo.clearValueCount = pPassInstance->info.draw.clearColorCount;
-			renderPassBeginInfo.pClearValues = pPassInstance->info.draw.pClearColors;
+				VkRenderPassBeginInfo renderPassBeginInfo = {0};
+				renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+				renderPassBeginInfo.pNext = NULL;
+				renderPassBeginInfo.renderPass = pPass->info.draw.renderPass;
+				renderPassBeginInfo.framebuffer = pState->pFrameInfos[pState->frameIndex].framebuffers[pPassInstance->info.draw.framebuffer];
+				renderPassBeginInfo.renderArea.offset.x = 0;
+				renderPassBeginInfo.renderArea.offset.y = 0;
+				renderPassBeginInfo.renderArea.extent.width = pPassInstance->info.draw.width;
+				renderPassBeginInfo.renderArea.extent.height = pPassInstance->info.draw.height;
+				renderPassBeginInfo.clearValueCount = pPassInstance->info.draw.clearColorCount;
+				renderPassBeginInfo.pClearValues = pPassInstance->info.draw.pClearColors;
 
-			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+				vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-			struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[0], pState->resources, (void**)&pInputResource);
-			
-			VkBuffer vertexBuffer = pInputResource->info.buffer.buffer;
-			VkDeviceSize offset = 0;
-			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &offset);
+				struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[0], pState->resourcePool, (void**)&pInputResource);
 
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pPass->info.draw.pipeline);
+				VkBuffer vertexBuffer = pInputResource->info.buffer.buffer;
+				VkDeviceSize offset = 0;
+				vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &offset);
 
-			vkCmdBindDescriptorSets(
-				commandBuffer,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				pPass->info.draw.pipelineLayout,
-				0,
-				1,
-				&pState->pFrameInfos[pState->frameIndex].descriptorSets[pPassInstance->info.draw.descriptorSet],
-				0,
-				NULL);
+				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pPass->info.draw.pipeline);
 
-			VkViewport viewport = {0};
-			viewport.x = 0;
-			viewport.y = (float)pPassInstance->info.draw.height;
-			viewport.width = (float)pPassInstance->info.draw.width;
-			viewport.height = -(float)pPassInstance->info.draw.height;
-			viewport.minDepth = 0;
-			viewport.maxDepth = 1.0f;
-			
-			VkRect2D scissor = {0};
-			scissor.offset.x = 0;
-			scissor.offset.y = 0;
-			scissor.extent.width = pPassInstance->info.draw.width;
-			scissor.extent.height = pPassInstance->info.draw.height;
-			
-			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+				vkCmdBindDescriptorSets(
+					commandBuffer,
+					VK_PIPELINE_BIND_POINT_GRAPHICS,
+					pPass->info.draw.pipelineLayout,
+					0,
+					1,
+					&pState->pFrameInfos[pState->frameIndex].descriptorSets[pPassInstance->info.draw.descriptorSet],
+					0,
+					NULL);
 
-			vkCmdDraw(commandBuffer, pPassInstance->info.draw.vertexCount, 1, 0, 0);
+				VkViewport viewport = {0};
+				viewport.x = 0;
+				viewport.y = (float)pPassInstance->info.draw.height;
+				viewport.width = (float)pPassInstance->info.draw.width;
+				viewport.height = -(float)pPassInstance->info.draw.height;
+				viewport.minDepth = 0;
+				viewport.maxDepth = 1.0f;
 
-			vkCmdEndRenderPass(commandBuffer);
-		}
-		else if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_IMAGE_TO_IMAGE_COPY)
-		{
-			struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[0], pState->resources, (void**)&pInputResource);
+				VkRect2D scissor = {0};
+				scissor.offset.x = 0;
+				scissor.offset.y = 0;
+				scissor.extent.width = pPassInstance->info.draw.width;
+				scissor.extent.height = pPassInstance->info.draw.height;
 
-			struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[1], pState->resources, (void**)&pOutputResource);
+				vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+				vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-			VkImageCopy imageCopy = {0};
-			imageCopy.srcSubresource.aspectMask = pInputResource->info.image.aspect;
-			imageCopy.srcSubresource.baseArrayLayer = 0;
-			imageCopy.srcSubresource.layerCount = 1;
-			imageCopy.srcSubresource.mipLevel = 0;
-			imageCopy.srcOffset.x = 0;
-			imageCopy.srcOffset.y = 0;
-			imageCopy.srcOffset.z = 0;
-			imageCopy.dstSubresource.aspectMask = pOutputResource->info.image.aspect;
-			imageCopy.dstSubresource.baseArrayLayer = 0;
-			imageCopy.dstSubresource.layerCount = 1;
-			imageCopy.dstSubresource.mipLevel = 0;
-			imageCopy.dstOffset.x = 0;
-			imageCopy.dstOffset.y = 0;
-			imageCopy.dstOffset.z = 0;
-			imageCopy.extent.width = pPassInstance->info.imageToImageCopy.width;
-			imageCopy.extent.height = pPassInstance->info.imageToImageCopy.height;
-			imageCopy.extent.depth = 1;
+				vkCmdDraw(commandBuffer, pPassInstance->info.draw.vertexCount, 1, 0, 0);
 
-			vkCmdCopyImage(
-				commandBuffer,
-				pInputResource->info.image.image,
-				pInputResource->state.layout,
-				pOutputResource->info.image.image,
-				pOutputResource->state.layout,
-				1,
-				&imageCopy);
-		}
-		else if(pPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_BUFFER_TO_IMAGE_COPY)
-		{
-			struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[0], pState->resources, (void**)&pInputResource);
+				vkCmdEndRenderPass(commandBuffer);
+			}
+			else if(pPassInstance->type == TRM_RENDERER_PASS_TYPE_IMAGE_TO_IMAGE_COPY)
+			{
+				struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[0], pState->resourcePool, (void**)&pInputResource);
 
-			struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[1], pState->resources, (void**)&pOutputResource);
+				struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
 
-			VkBufferImageCopy bufferImageCopy = {0};
-			bufferImageCopy.bufferOffset = 0;
-			bufferImageCopy.bufferRowLength = 0;
-			bufferImageCopy.bufferImageHeight = 0;
-			bufferImageCopy.imageSubresource.aspectMask = pOutputResource->info.image.aspect;
-			bufferImageCopy.imageSubresource.baseArrayLayer = 0;
-			bufferImageCopy.imageSubresource.layerCount = 1;
-			bufferImageCopy.imageSubresource.mipLevel = 0;
-			bufferImageCopy.imageOffset.x = 0;
-			bufferImageCopy.imageOffset.y = 0;
-			bufferImageCopy.imageOffset.z = 0;
-			bufferImageCopy.imageExtent.width = pPassInstance->info.bufferToImageCopy.width;
-			bufferImageCopy.imageExtent.height = pPassInstance->info.bufferToImageCopy.height;
-			bufferImageCopy.imageExtent.depth = 1;
+				VkImageCopy imageCopy = {0};
+				imageCopy.srcSubresource.aspectMask = pInputResource->info.image.aspect;
+				imageCopy.srcSubresource.baseArrayLayer = 0;
+				imageCopy.srcSubresource.layerCount = 1;
+				imageCopy.srcSubresource.mipLevel = 0;
+				imageCopy.srcOffset.x = 0;
+				imageCopy.srcOffset.y = 0;
+				imageCopy.srcOffset.z = 0;
+				imageCopy.dstSubresource.aspectMask = pOutputResource->info.image.aspect;
+				imageCopy.dstSubresource.baseArrayLayer = 0;
+				imageCopy.dstSubresource.layerCount = 1;
+				imageCopy.dstSubresource.mipLevel = 0;
+				imageCopy.dstOffset.x = 0;
+				imageCopy.dstOffset.y = 0;
+				imageCopy.dstOffset.z = 0;
+				imageCopy.extent.width = pPassInstance->info.imageToImageCopy.width;
+				imageCopy.extent.height = pPassInstance->info.imageToImageCopy.height;
+				imageCopy.extent.depth = 1;
 
-			vkCmdCopyBufferToImage(
-				commandBuffer,
-				pInputResource->info.buffer.buffer,
-				pOutputResource->info.image.image,
-				pOutputResource->state.layout,
-				1,
-				&bufferImageCopy);
-		}
+				vkCmdCopyImage(
+					commandBuffer,
+					pInputResource->info.image.image,
+					pInputResource->state.layout,
+					pOutputResource->info.image.image,
+					pOutputResource->state.layout,
+					1,
+					&imageCopy);
+			}
+			else if(pPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_BUFFER_TO_IMAGE_COPY)
+			{
+				struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[0], pState->resourcePool, (void**)&pInputResource);
 
-		else if(pPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_BUFFER_TO_BUFFER_COPY)
-		{
-			struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[0], pState->resources, (void**)&pInputResource);
+				struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
 
-			struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[1], pState->resources, (void**)&pOutputResource);
+				VkBufferImageCopy bufferImageCopy = {0};
+				bufferImageCopy.bufferOffset = 0;
+				bufferImageCopy.bufferRowLength = 0;
+				bufferImageCopy.bufferImageHeight = 0;
+				bufferImageCopy.imageSubresource.aspectMask = pOutputResource->info.image.aspect;
+				bufferImageCopy.imageSubresource.baseArrayLayer = 0;
+				bufferImageCopy.imageSubresource.layerCount = 1;
+				bufferImageCopy.imageSubresource.mipLevel = 0;
+				bufferImageCopy.imageOffset.x = 0;
+				bufferImageCopy.imageOffset.y = 0;
+				bufferImageCopy.imageOffset.z = 0;
+				bufferImageCopy.imageExtent.width = pPassInstance->info.bufferToImageCopy.width;
+				bufferImageCopy.imageExtent.height = pPassInstance->info.bufferToImageCopy.height;
+				bufferImageCopy.imageExtent.depth = 1;
 
-			VkBufferCopy bufferCopy = {0};
-			bufferCopy.srcOffset = 0;
-			bufferCopy.dstOffset = 0;
-			bufferCopy.size = pPassInstance->info.bufferToBufferCopy.sizeInBytes;
+				vkCmdCopyBufferToImage(
+					commandBuffer,
+					pInputResource->info.buffer.buffer,
+					pOutputResource->info.image.image,
+					pOutputResource->state.layout,
+					1,
+					&bufferImageCopy);
+			}
 
-			vkCmdCopyBuffer(
-				commandBuffer, 
-				pInputResource->info.buffer.buffer, 
-				pOutputResource->info.buffer.buffer, 
-				1, 
-				&bufferCopy);
-		}
-		else if(pPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_BLIT)
-		{
-			struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[0], pState->resources, (void**)&pInputResource);
+			else if(pPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_BUFFER_TO_BUFFER_COPY)
+			{
+				struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[0], pState->resourcePool, (void**)&pInputResource);
 
-			struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPassInstance->pBindings[1], pState->resources, (void**)&pOutputResource);
+				struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
 
-			VkImageBlit blit = {0};
-			blit.srcSubresource.aspectMask = pInputResource->info.image.aspect;
-			blit.srcSubresource.baseArrayLayer = 0;
-			blit.srcSubresource.layerCount = 1;
-			blit.srcSubresource.mipLevel = 0;
-			blit.srcOffsets[0].x = 0;
-			blit.srcOffsets[0].y = 0;
-			blit.srcOffsets[0].z = 0;
-			blit.srcOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.srcWidth;
-			blit.srcOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.srcHeight;
-			blit.srcOffsets[1].z = 1;
-			blit.dstSubresource.aspectMask = pOutputResource->info.image.aspect;
-			blit.dstSubresource.baseArrayLayer = 0;
-			blit.dstSubresource.layerCount = 1;
-			blit.dstSubresource.mipLevel = 0;
-			blit.dstOffsets[0].x = 0;
-			blit.dstOffsets[0].y = 0;
-			blit.dstOffsets[0].z = 0;
-			blit.dstOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.dstWidth;
-			blit.dstOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.dstHeight;
-			blit.dstOffsets[1].z = 1;
-			
-			vkCmdBlitImage(
-				commandBuffer, 
-				pInputResource->info.image.image, 
-				pInputResource->state.layout, 
-				pOutputResource->info.image.image, 
-				pOutputResource->state.layout, 
-				1, 
-				&blit, 
-				VK_FILTER_LINEAR);
+				VkBufferCopy bufferCopy = {0};
+				bufferCopy.srcOffset = 0;
+				bufferCopy.dstOffset = 0;
+				bufferCopy.size = pPassInstance->info.bufferToBufferCopy.sizeInBytes;
+
+				vkCmdCopyBuffer(
+					commandBuffer,
+					pInputResource->info.buffer.buffer,
+					pOutputResource->info.buffer.buffer,
+					1,
+					&bufferCopy);
+			}
+			else if(pPassInstances[passInstanceIndex].type == TRM_RENDERER_PASS_TYPE_BLIT)
+			{
+				struct TRM_Renderer_Backend_Resource* pInputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[0], pState->resourcePool, (void**)&pInputResource);
+
+				struct TRM_Renderer_Backend_Resource* pOutputResource = NULL;
+				TRM_Arena_get(pPassInstance->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
+
+				VkImageBlit blit = {0};
+				blit.srcSubresource.aspectMask = pInputResource->info.image.aspect;
+				blit.srcSubresource.baseArrayLayer = 0;
+				blit.srcSubresource.layerCount = 1;
+				blit.srcSubresource.mipLevel = 0;
+				blit.srcOffsets[0].x = 0;
+				blit.srcOffsets[0].y = 0;
+				blit.srcOffsets[0].z = 0;
+				blit.srcOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.srcWidth;
+				blit.srcOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.srcHeight;
+				blit.srcOffsets[1].z = 1;
+				blit.dstSubresource.aspectMask = pOutputResource->info.image.aspect;
+				blit.dstSubresource.baseArrayLayer = 0;
+				blit.dstSubresource.layerCount = 1;
+				blit.dstSubresource.mipLevel = 0;
+				blit.dstOffsets[0].x = 0;
+				blit.dstOffsets[0].y = 0;
+				blit.dstOffsets[0].z = 0;
+				blit.dstOffsets[1].x = (int32_t)pPassInstances[passInstanceIndex].info.blit.dstWidth;
+				blit.dstOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.dstHeight;
+				blit.dstOffsets[1].z = 1;
+
+				vkCmdBlitImage(
+					commandBuffer,
+					pInputResource->info.image.image,
+					pInputResource->state.layout,
+					pOutputResource->info.image.image,
+					pOutputResource->state.layout,
+					1,
+					&blit,
+					VK_FILTER_LINEAR);
+			}
 		}
 	}
 
@@ -2049,8 +2292,9 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 	TRM_Renderer_Backend_createCommandPool(pState->pAllocator, pState->device, pState->queueFamilyIndex, &pState->commandPool);
 	TRM_Renderer_Backend_createDescriptorPool(pState->pAllocator, pState->device, &pState->descriptorPool);
 
-	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Resource), TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT, &pState->resources);
-	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Pass), TRM_RENDERER_BACKEND_MAX_PASS_COUNT, &pState->passes);
+	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Resource), TRM_RENDERER_BACKEND_MAX_RESOURCE_COUNT, &pState->resourcePool);
+	TRM_LinkedList_create(sizeof(uint32_t), &pState->resourceHandles);
+	TRM_Arena_create(sizeof(struct TRM_Renderer_Backend_Pass), TRM_RENDERER_BACKEND_MAX_PASS_COUNT, &pState->passPool);
 
 	TRM_Renderer_Backend_createSwapchain(
 		pState->pAllocator,
@@ -2098,7 +2342,7 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 
 		TRM_Arena_add(
 			(void*)&swapchainColorImage, 
-			&pState->resources, 
+			&pState->resourcePool, 
 			&pState->pSwapchainImageInfos[swapchainImageIndex].colorImage);
 
 		TRM_Renderer_Backend_createSemaphore(
@@ -2117,11 +2361,13 @@ void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t wind
 		TRM_Renderer_Backend_allocateCommandBuffer(pState->commandPool, pState->device, &pState->pFrameInfos[frameIndex].commandBuffer);
 		TRM_Renderer_Backend_createFence(pState->pAllocator, pState->device, &pState->pFrameInfos[frameIndex].commandBufferExecutedFence);
 		TRM_Renderer_Backend_createSemaphore(pState->pAllocator, pState->device, &pState->pFrameInfos[frameIndex].imageAvailableSemaphore);
+		TRM_Renderer_Backend_createTimelineSemaphore(pState->pAllocator, pState->device, &pState->pFrameInfos[frameIndex].timelineSemaphore);
 		pState->pFrameInfos[frameIndex].descriptorSetCount = 0;
 		pState->pFrameInfos[frameIndex].framebufferCount = 0;
 	}
 
 	pState->frameIndex = 0;
+	pState->submitionIndex = 0;
 }
 
 void TRM_Renderer_terminate(void)
@@ -2133,8 +2379,20 @@ void TRM_Renderer_terminate(void)
 			exit(EXIT_FAILURE);
 		}
 
+		struct TRM_LinkedList_Node* pResourceNode = pState->resourceHandles.pFirstNode;
+		while(pResourceNode != NULL)
+		{
+			const uint32_t handle = *(uint32_t*)pResourceNode->pData;
+			struct TRM_Renderer_Backend_Resource* pResource = NULL;
+			TRM_Arena_get(handle, pState->resourcePool, (void**)&pResource);
+			TRM_Renderer_Backend_destroyResource(handle);
+			pResourceNode = pResourceNode->pNextNode;
+		}
+		TRM_LinkedList_destroy(&pState->resourceHandles);
+
 		for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_BACKEND_FRAME_COUNT; ++frameIndex)
 		{
+			vkDestroySemaphore(pState->device, pState->pFrameInfos[frameIndex].timelineSemaphore, pState->pAllocator);
 			vkDestroySemaphore(pState->device, pState->pFrameInfos[frameIndex].imageAvailableSemaphore, pState->pAllocator);
 			vkDestroyFence(pState->device, pState->pFrameInfos[frameIndex].commandBufferExecutedFence, pState->pAllocator);
 
@@ -2149,7 +2407,7 @@ void TRM_Renderer_terminate(void)
 		for(uint32_t swapchainImageIndex = 0; swapchainImageIndex < pState->swapchainImageCount; ++swapchainImageIndex)
 		{	
 			struct TRM_Renderer_Backend_Resource* pSwapchainColorImage;
-			TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageIndex].colorImage, pState->resources, (void**)&pSwapchainColorImage);
+			TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageIndex].colorImage, pState->resourcePool, (void**)&pSwapchainColorImage);
 
 			vkDestroyImageView(pState->device, pSwapchainColorImage->info.image.imageView, pState->pAllocator);
 			vkFreeMemory(pState->device, pSwapchainColorImage->info.image.memory, pState->pAllocator);
@@ -2161,8 +2419,8 @@ void TRM_Renderer_terminate(void)
 		
 		vkDestroySampler(pState->device, pState->globalSampler, pState->pAllocator);
 
-		TRM_Arena_destroy(&pState->resources);
-		TRM_Arena_destroy(&pState->passes);
+		TRM_Arena_destroy(&pState->resourcePool);
+		TRM_Arena_destroy(&pState->passPool);
 		
 		vkDestroySwapchainKHR(pState->device, pState->swapchain, pState->pAllocator);
 		vkDestroyDescriptorPool(pState->device, pState->descriptorPool, pState->pAllocator);
@@ -2198,6 +2456,28 @@ void TRM_Renderer_beginFrame(void)
 			pState->pFrameInfos[pState->frameIndex].descriptorSets);
 		pState->pFrameInfos[pState->frameIndex].descriptorSetCount = 0;
 	}
+
+	uint64_t completedSubmitionIndex = 0;
+	vkGetSemaphoreCounterValue(pState->device, pState->pFrameInfos[pState->frameIndex].timelineSemaphore, &completedSubmitionIndex);
+
+	struct TRM_LinkedList_Node* pResourceNode = pState->resourceHandles.pFirstNode;
+	while(pResourceNode != NULL)
+	{
+		const uint32_t handle = *(uint32_t*)pResourceNode->pData;
+		struct TRM_Renderer_Backend_Resource* pResource = NULL;
+		TRM_Arena_get(handle, pState->resourcePool, (void**)&pResource);
+		if(pResource->toDelete && pResource->lastUsedSubmitionIndex <= completedSubmitionIndex)
+		{
+			TRM_Renderer_Backend_destroyResource(handle);
+			struct TRM_LinkedList_Node* pNextNode = pResourceNode->pNextNode;
+			TRM_LinkedList_delete(pResourceNode, &pState->resourceHandles);
+			pResourceNode = pNextNode;
+		}
+		else
+		{
+			pResourceNode = pResourceNode->pNextNode;
+		}
+	}
 }
 
 void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances, uint32_t windowWidth, uint32_t windowHeight)
@@ -2213,11 +2493,12 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 
 	if(acquireNextImageResult == VK_ERROR_OUT_OF_DATE_KHR || acquireNextImageResult == VK_SUBOPTIMAL_KHR)
 	{
+		// TODO : factorize
 		vkDeviceWaitIdle(pState->device);
 		for(uint32_t i = 0; i < pState->swapchainImageCount; ++i)
 		{
 			struct TRM_Renderer_Backend_Resource* pResource = NULL;
-			TRM_Arena_get(pState->pSwapchainImageInfos[i].colorImage, pState->resources, (void**)&pResource);
+			TRM_Arena_get(pState->pSwapchainImageInfos[i].colorImage, pState->resourcePool, (void**)&pResource);
 
 			vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
 			vkDestroySemaphore(pState->device, pState->pSwapchainImageInfos[i].imageRenderedSemaphore, pState->pAllocator);
@@ -2273,7 +2554,7 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 
 			TRM_Arena_add(
 				(void*)&swapchainColorImage,
-				&pState->resources,
+				&pState->resourcePool,
 				&pState->pSwapchainImageInfos[i].colorImage);
 
 			TRM_Renderer_Backend_createSemaphore(
@@ -2299,7 +2580,8 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 
 	TRM_Renderer_Backend_updateDescriptorSets(passInstanceCount, pBackendPassInstances);
 
-	TRM_Renderer_Backend_fillCommandBuffer(passInstanceCount, pBackendPassInstances, pState->pFrameInfos[pState->frameIndex].commandBuffer);
+	const bool skip = windowWidth != pState->swapchainWidth || windowHeight != pState->swapchainHeight;
+	TRM_Renderer_Backend_fillCommandBuffer(passInstanceCount, pBackendPassInstances, skip, pState->pFrameInfos[pState->frameIndex].commandBuffer);
 
 	for(uint32_t passInstanceIndex = 0; passInstanceIndex < passInstanceCount; ++passInstanceIndex)
 	{
@@ -2315,9 +2597,17 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 
 	VkPipelineStageFlags waitDstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
+	VkTimelineSemaphoreSubmitInfo timelineSemaphoreSubmitInfo = {0};
+	timelineSemaphoreSubmitInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+	timelineSemaphoreSubmitInfo.pNext = NULL;
+	timelineSemaphoreSubmitInfo.waitSemaphoreValueCount = 0;
+	timelineSemaphoreSubmitInfo.pWaitSemaphoreValues = NULL;
+	timelineSemaphoreSubmitInfo.signalSemaphoreValueCount = 1;
+	timelineSemaphoreSubmitInfo.pSignalSemaphoreValues = &pState->submitionIndex;
+
 	VkSubmitInfo submitInfo = {0};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.pNext = NULL;
+	submitInfo.pNext = &timelineSemaphoreSubmitInfo;
 	submitInfo.waitSemaphoreCount = 1;
 	submitInfo.pWaitSemaphores = &pState->pFrameInfos[pState->frameIndex].imageAvailableSemaphore;
 	submitInfo.pWaitDstStageMask = &waitDstStageMask;
@@ -2353,246 +2643,31 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 	}
 
 	pState->frameIndex = (pState->frameIndex + 1) % TRM_RENDERER_BACKEND_FRAME_COUNT;
+	pState->submitionIndex += 1;
 }
 
-void TRM_Renderer_createBuffer(struct TRM_Renderer_BufferCreateInfo info, uint32_t* pHandle)
+void TRM_Renderer_createResource(struct TRM_Renderer_ResourceCreateInfo info, uint32_t* pHandle)
 {
-	VkBufferUsageFlags bufferUsage = 0;
-
-	if((info.usage & TRM_RENDERER_BUFFER_USAGE_UNIFORM) != 0)
-	{
-		bufferUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_BUFFER_USAGE_STORAGE) != 0)
-	{
-		bufferUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_BUFFER_USAGE_TRANSFER_SRC) != 0)
-	{
-		bufferUsage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_BUFFER_USAGE_TRANSFER_DST) != 0)
-	{
-		bufferUsage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_BUFFER_USAGE_VERTEX) != 0)
-	{
-		bufferUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-	}
-
-	struct TRM_Renderer_Backend_Resource bufferIndirection = {0};
-	bufferIndirection.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER_INDIRECTION;
-	bufferIndirection.info.bufferIndirection.hostVisible = info.hostVisible;
-
-	if(info.hostVisible)
-	{
-		for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_BACKEND_FRAME_COUNT; ++frameIndex)
-		{
-			struct TRM_Renderer_Backend_Resource resource = {0};
-			resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER;
-			resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-			resource.state.access = VK_ACCESS_NONE;
-
-			TRM_Renderer_Backend_createBuffer(
-				pState->pAllocator,
-				pState->device,
-				info.sizeInBytes,
-				bufferUsage,
-				pState->queueFamilyIndex,
-				&resource.info.buffer.buffer);
-
-			TRM_Renderer_Backend_allocateMemoryForBuffer(
-				pState->pAllocator,
-				pState->physicalDevice,
-				pState->device,
-				resource.info.buffer.buffer,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				&resource.info.buffer.memory);
-
-			vkBindBufferMemory(
-				pState->device, 
-				resource.info.buffer.buffer, 
-				resource.info.buffer.memory, 
-				0);
-
-			uint32_t buffer = 0;
-			TRM_Arena_add((void*)&resource, &pState->resources, &buffer);
-			bufferIndirection.info.bufferIndirection.info.hostVisible.buffers[frameIndex] = buffer;
-		}
-	}
-	else
-	{
-		struct TRM_Renderer_Backend_Resource resource = {0};
-		resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER;
-		resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-		resource.state.access = VK_ACCESS_NONE;
-
-		TRM_Renderer_Backend_createBuffer(
-			pState->pAllocator,
-			pState->device,
-			info.sizeInBytes,
-			bufferUsage,
-			pState->queueFamilyIndex,
-			&resource.info.buffer.buffer);
-
-		TRM_Renderer_Backend_allocateMemoryForBuffer(
-			pState->pAllocator,
-			pState->physicalDevice,
-			pState->device,
-			resource.info.buffer.buffer,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			&resource.info.buffer.memory);
-
-		vkBindBufferMemory(
-			pState->device,
-			resource.info.buffer.buffer,
-			resource.info.buffer.memory,
-			0);
-
-		uint32_t buffer = 0;
-		TRM_Arena_add((void*)&resource, &pState->resources, &buffer);
-		bufferIndirection.info.bufferIndirection.info.deviceLocal.buffer = buffer;
-	}
-
-	TRM_Arena_add((void*)&bufferIndirection, &pState->resources, pHandle);
-}
-
-void TRM_Renderer_createImage(struct TRM_Renderer_ImageCreateInfo info, uint32_t* pHandle)
-{
-	VkImageAspectFlags imageAspect = 0;
-	VkImageUsageFlags imageUsage = 0;
-
-	if((info.usage & TRM_RENDERER_IMAGE_USAGE_COLOR_ATTACHMENT) != 0)
-	{
-		imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-		imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_IMAGE_USAGE_DEPTH_ATTACHMENT) != 0)
-	{
-		imageUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-		imageAspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_IMAGE_USAGE_SAMPLED) != 0)
-	{
-		imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-		imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_IMAGE_USAGE_STORAGE) != 0)
-	{
-		imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
-		imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_IMAGE_USAGE_TRANSFER_SRC) != 0)
-	{
-		imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-		imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-	}
-
-	if((info.usage & TRM_RENDERER_IMAGE_USAGE_TRANSFER_DST) != 0)
-	{
-		imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-		imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-	}
-
-	struct TRM_Renderer_Backend_Resource resource = {0};
-	resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_IMAGE;
-	resource.info.image.aspect = imageAspect;
-	resource.info.image.swapchainImage = false;
-	resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-	resource.state.access = VK_ACCESS_NONE;
-	resource.state.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-	TRM_Renderer_Backend_createImage(
-		pState->pAllocator,
-		pState->device,
-		info.width,
-		info.height,
-		TRM_Renderer_Backend_translateFormat(info.format),
-		resource.state.layout,
-		imageUsage,
-		pState->queueFamilyIndex,
-		&resource.info.image.image);
-
-	TRM_Renderer_Backend_allocateMemoryForImage(
-		pState->pAllocator,
-		pState->physicalDevice,
-		pState->device,
-		resource.info.image.image,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		&resource.info.image.memory);
-
-	vkBindImageMemory(pState->device, resource.info.image.image, resource.info.image.memory, 0);
-
-	TRM_Renderer_Backend_createImageView(
-		pState->pAllocator,
-		pState->device,
-		resource.info.image.image,
-		TRM_Renderer_Backend_translateFormat(info.format),
-		resource.info.image.aspect,
-		&resource.info.image.imageView);
-
-	TRM_Arena_add((void*)&resource, &pState->resources, pHandle);
+	TRM_Renderer_Backend_createResource(info, pHandle);
+	TRM_LinkedList_push(pHandle, &pState->resourceHandles);
 }
 
 void TRM_Renderer_destroyResource(uint32_t handle)
 {
-	if(vkDeviceWaitIdle(pState->device) != VK_SUCCESS) // this shouldn't be necessary
-	{
-		exit(EXIT_FAILURE);
-	}
-
 	struct TRM_Renderer_Backend_Resource* pResource = NULL;
-	TRM_Arena_get(handle, pState->resources, (void**)&pResource);
-	
-	if(pResource->type == TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER_INDIRECTION)
-	{
-		if(pResource->info.bufferIndirection.hostVisible)
-		{
-			for(uint32_t frameIndex = 0; frameIndex < TRM_RENDERER_BACKEND_FRAME_COUNT; ++frameIndex)
-			{
-				struct TRM_Renderer_Backend_Resource* pBuffer = NULL;
-				TRM_Arena_get(pResource->info.bufferIndirection.info.hostVisible.buffers[frameIndex], pState->resources, (void**)&pBuffer);
-				vkDestroyBuffer(pState->device, pBuffer->info.buffer.buffer, pState->pAllocator);
-				vkFreeMemory(pState->device, pBuffer->info.buffer.memory, pState->pAllocator);
-				TRM_Arena_remove(pResource->info.bufferIndirection.info.hostVisible.buffers[frameIndex], &pState->resources);
-			}
-		}
-		else
-		{
-			struct TRM_Renderer_Backend_Resource* pBuffer = NULL;
-			TRM_Arena_get(pResource->info.bufferIndirection.info.deviceLocal.buffer, pState->resources, (void**)&pBuffer);
-			vkDestroyBuffer(pState->device, pBuffer->info.buffer.buffer, pState->pAllocator);
-			vkFreeMemory(pState->device, pBuffer->info.buffer.memory, pState->pAllocator);
-			TRM_Arena_remove(pResource->info.bufferIndirection.info.deviceLocal.buffer, &pState->resources);
-		}
-	}
-	else
-	{
-		vkDestroyImage(pState->device, pResource->info.image.image, pState->pAllocator);
-		vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
-		vkFreeMemory(pState->device, pResource->info.image.memory, pState->pAllocator);
-	}
-	
-	TRM_Arena_remove(handle, &pState->resources);
+	TRM_Arena_get(handle, pState->resourcePool, (void**)&pResource);
+	pResource->toDelete = true; // resource destruction is differed
 }
 
 void TRM_Renderer_writeBuffer(uint32_t sizeInBytes, const void* pData, uint32_t handle)
 {
 	struct TRM_Renderer_Backend_Resource* pBufferIndirection = NULL;
-	TRM_Arena_get(handle, pState->resources, (void**)&pBufferIndirection);
+	TRM_Arena_get(handle, pState->resourcePool, (void**)&pBufferIndirection);
 
 	uint32_t buffer = pBufferIndirection->info.bufferIndirection.info.hostVisible.buffers[pState->frameIndex];
 
 	struct TRM_Renderer_Backend_Resource* pResource = NULL;
-	TRM_Arena_get(buffer, pState->resources, (void**)&pResource);
+	TRM_Arena_get(buffer, pState->resourcePool, (void**)&pResource);
 
 	void* pMappedMemory = NULL;
 	vkMapMemory(pState->device, pResource->info.buffer.memory, 0, sizeInBytes, 0, &pMappedMemory);
@@ -2653,7 +2728,7 @@ void TRM_Renderer_createDispatchPass(struct TRM_Renderer_DispatchPassCreateInfo 
 
 	vkDestroyShaderModule(pState->device, shaderModule, pState->pAllocator);
 
-	TRM_Arena_add(&pass, &pState->passes, pHandle);
+	TRM_Arena_add(&pass, &pState->passPool, pHandle);
 }
 
 void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, uint32_t* pHandle)
@@ -2804,7 +2879,7 @@ void TRM_Renderer_createDrawPass(struct TRM_Renderer_DrawPassCreateInfo info, ui
 	TRM_Memory_deallocate(pAttachmentDescriptions);
 	TRM_Memory_deallocate(pColorAttachmentReferences);
 
-	TRM_Arena_add(&pass, &pState->passes, pHandle);
+	TRM_Arena_add(&pass, &pState->passPool, pHandle);
 }
 
 void TRM_Renderer_destroyPass(uint32_t handle)
@@ -2815,7 +2890,7 @@ void TRM_Renderer_destroyPass(uint32_t handle)
 	}
 
 	struct TRM_Renderer_Backend_Pass* pPass = NULL;
-	TRM_Arena_get(handle, pState->passes, (void**)&pPass);
+	TRM_Arena_get(handle, pState->passPool, (void**)&pPass);
 	
 	if(pPass->type == TRM_RENDERER_PASS_TYPE_DISPATCH)
 	{

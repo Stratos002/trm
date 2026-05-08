@@ -105,14 +105,14 @@ void TRM_LinkedList_create(size_t elementSize, struct TRM_LinkedList* pLinkedLis
 	pLinkedList->pFirstNode = NULL;
 }
 
-void TRM_LinkedList_destroy(struct TRM_LinkedList* pDoublyLinkedList)
+void TRM_LinkedList_destroy(struct TRM_LinkedList* pLinkedList)
 {
-	struct TRM_LinkedList_Node* pNode = pDoublyLinkedList->pFirstNode;
+	struct TRM_LinkedList_Node* pNode = pLinkedList->pFirstNode;
 	while(pNode != NULL)
 	{
 		struct TRM_LinkedList_Node* pNextNode = pNode->pNextNode;
-		free(pNode->pData);
-		free(pNode);
+		TRM_Memory_deallocate(pNode->pData);
+		TRM_Memory_deallocate(pNode);
 		pNode = pNextNode;
 	}
 }
@@ -177,8 +177,8 @@ void TRM_LinkedList_delete(struct TRM_LinkedList_Node* pNode, struct TRM_LinkedL
 		pPreviousNode->pNextNode = pNode->pNextNode;
 	}
 
-	free(pNode->pData);
-	free(pNode);
+	TRM_Memory_deallocate(pNode->pData);
+	TRM_Memory_deallocate(pNode);
 
 	pLinkedList->elementCount -= 1;
 }
@@ -207,8 +207,8 @@ void TRM_DoublyLinkedList_destroy(struct TRM_DoublyLinkedList* pDoublyLinkedList
 	while(pNode != NULL)
 	{
 		struct TRM_DoublyLinkedList_Node* pNextNode = pNode->pNextNode;
-		free(pNode->pData);
-		free(pNode);
+		TRM_Memory_deallocate(pNode->pData);
+		TRM_Memory_deallocate(pNode);
 		pNode = pNextNode;
 	}
 }
@@ -281,8 +281,8 @@ void TRM_DoublyLinkedList_delete(struct TRM_DoublyLinkedList_Node* pNode, struct
 		pNode->pNextNode->pPreviousNode = pNode->pPreviousNode;
 	}
 
-	free(pNode->pData);
-	free(pNode);
+	TRM_Memory_deallocate(pNode->pData);
+	TRM_Memory_deallocate(pNode);
 
 	pDoublyLinkedList->elementCount -= 1;
 }

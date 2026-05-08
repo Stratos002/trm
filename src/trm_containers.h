@@ -60,7 +60,7 @@ struct TRM_LinkedList
 
 void TRM_LinkedList_create(size_t elementSize, struct TRM_LinkedList* pLinkedList);
 
-void TRM_LinkedList_destroy(struct TRM_LinkedList* pDoublyLinkedList);
+void TRM_LinkedList_destroy(struct TRM_LinkedList* pLinkedList);
 
 void TRM_LinkedList_push(const void* pElement, struct TRM_LinkedList* pLinkedList);
 
