@@ -69,7 +69,7 @@ int main(void)
 	}
 
 	TRM_Memory_start();
-	TRM_Renderer_start(pWindow, TRM_WINDOW_WIDTH, TRM_WINDOW_HEIGHT);
+	TRM_Renderer_start(pWindow);
 
 	uint32_t width = 0;
 	uint32_t height = 0;

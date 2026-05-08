@@ -200,7 +200,7 @@ struct TRM_Renderer_PassInstance
 	} info;
 };
 
-void TRM_Renderer_start(GLFWwindow* pWindow, uint32_t windowWidth, uint32_t windowHeight);
+void TRM_Renderer_start(GLFWwindow* pWindow);
 
 void TRM_Renderer_terminate(void);
 
