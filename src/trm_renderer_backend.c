@@ -1442,9 +1442,12 @@ static void TRM_Renderer_Backend_destroyResource(uint32_t handle)
 	}
 	else
 	{
-		vkDestroyImage(pState->device, pResource->info.image.image, pState->pAllocator);
+		if(!pResource->info.image.swapchainImage)
+		{
+			vkDestroyImage(pState->device, pResource->info.image.image, pState->pAllocator);
+			vkFreeMemory(pState->device, pResource->info.image.memory, pState->pAllocator);
+		}
 		vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
-		vkFreeMemory(pState->device, pResource->info.image.memory, pState->pAllocator);
 	}
 
 	TRM_Arena_remove(handle, &pState->resourcePool);
@@ -2478,7 +2481,7 @@ void TRM_Renderer_beginFrame(void)
 			pResourceNode = pResourceNode->pNextNode;
 		}
 	}
-}
+}              
 
 void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances, uint32_t windowWidth, uint32_t windowHeight)
 {
@@ -2500,7 +2503,7 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 			struct TRM_Renderer_Backend_Resource* pResource = NULL;
 			TRM_Arena_get(pState->pSwapchainImageInfos[i].colorImage, pState->resourcePool, (void**)&pResource);
 
-			vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
+			TRM_Renderer_Backend_destroyResource(pState->pSwapchainImageInfos[i].colorImage);
 			vkDestroySemaphore(pState->device, pState->pSwapchainImageInfos[i].imageRenderedSemaphore, pState->pAllocator);
 		}
 		
