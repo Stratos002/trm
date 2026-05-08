@@ -33,12 +33,12 @@ else()
         -Wpedantic
         -Werror
         -Wshadow
-        -Wconversion
-        -Wsign-conversion
+        -Wno-conversion #for stb
+        -Wno-sign-conversion #for stb
         -Wstrict-prototypes
         -Wmissing-prototypes
         -Wnull-dereference
-        -Wdouble-promotion
+        -Wno-double-promotion # for stb
         -Werror=implicit-function-declaration
         -Wformat=2)
 endif()

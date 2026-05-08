@@ -1914,7 +1914,6 @@ static void TRM_Renderer_Backend_updateDescriptorSets(uint32_t passInstanceCount
 static void TRM_Renderer_Backend_fillCommandBuffer(
 	uint32_t passInstanceCount,
 	struct TRM_Renderer_Backend_PassInstance* pPassInstances,
-	bool skip,
 	VkCommandBuffer commandBuffer)
 {
 	vkResetCommandBuffer(commandBuffer, 0);
@@ -1930,10 +1929,8 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 		exit(EXIT_FAILURE);
 	}
 
-	if(!skip)
+	for(uint32_t passInstanceIndex = 0; passInstanceIndex < passInstanceCount; ++passInstanceIndex)
 	{
-		for(uint32_t passInstanceIndex = 0; passInstanceIndex < passInstanceCount; ++passInstanceIndex)
-		{
 			VkPipelineStageFlags srcStageFlags = 0;
 			VkPipelineStageFlags dstStageFlags = 0;
 			struct TRM_DynamicArray bufferMemoryBarriers;
@@ -2258,16 +2255,15 @@ static void TRM_Renderer_Backend_fillCommandBuffer(
 				blit.dstOffsets[1].y = (int32_t)pPassInstances[passInstanceIndex].info.blit.dstHeight;
 				blit.dstOffsets[1].z = 1;
 
-				vkCmdBlitImage(
-					commandBuffer,
-					pInputResource->info.image.image,
-					pInputResource->state.layout,
-					pOutputResource->info.image.image,
-					pOutputResource->state.layout,
-					1,
-					&blit,
-					VK_FILTER_LINEAR);
-			}
+			vkCmdBlitImage(
+				commandBuffer,
+				pInputResource->info.image.image,
+				pInputResource->state.layout,
+				pOutputResource->info.image.image,
+				pOutputResource->state.layout,
+				1,
+				&blit,
+				VK_FILTER_LINEAR);
 		}
 	}
 
@@ -2502,8 +2498,15 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 		pState->pFrameInfos[pState->frameIndex].imageAvailableSemaphore,
 		VK_NULL_HANDLE,
 		&swapchainImageIndex);
-
-	if(acquireNextImageResult == VK_ERROR_OUT_OF_DATE_KHR || acquireNextImageResult == VK_SUBOPTIMAL_KHR)
+		
+	if(acquireNextImageResult != VK_SUCCESS && 
+		acquireNextImageResult != VK_ERROR_OUT_OF_DATE_KHR && 
+		acquireNextImageResult != VK_SUBOPTIMAL_KHR)
+	{
+		exit(EXIT_FAILURE);
+	}
+	
+	if(windowWidth != pState->swapchainWidth || windowHeight != pState->swapchainHeight)
 	{
 		// TODO : factorize
 		vkDeviceWaitIdle(pState->device);
@@ -2583,12 +2586,7 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 		}
 
 		TRM_Memory_deallocate(pSwapchainImages);
-
 		return;
-	}
-	else if(acquireNextImageResult != VK_SUCCESS)
-	{
-		exit(EXIT_FAILURE);
 	}
 
 	struct TRM_Renderer_Backend_PassInstance* pBackendPassInstances = NULL;
@@ -2599,8 +2597,7 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 
 	TRM_Renderer_Backend_updateDescriptorSets(passInstanceCount, pBackendPassInstances);
 
-	const bool skip = windowWidth != pState->swapchainWidth || windowHeight != pState->swapchainHeight;
-	TRM_Renderer_Backend_fillCommandBuffer(passInstanceCount, pBackendPassInstances, skip, pState->pFrameInfos[pState->frameIndex].commandBuffer);
+	TRM_Renderer_Backend_fillCommandBuffer(passInstanceCount, pBackendPassInstances, pState->pFrameInfos[pState->frameIndex].commandBuffer);
 
 	for(uint32_t passInstanceIndex = 0; passInstanceIndex < passInstanceCount; ++passInstanceIndex)
 	{
