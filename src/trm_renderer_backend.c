@@ -1298,6 +1298,8 @@ static void TRM_Renderer_Backend_createResource(struct TRM_Renderer_ResourceCrea
 			resource.type = TRM_RENDERER_BACKEND_RESOURCE_TYPE_BUFFER;
 			resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 			resource.state.access = VK_ACCESS_NONE;
+			bufferIndirection.toDelete = false;
+			bufferIndirection.lastUsedSubmitionIndex = 0;
 
 			TRM_Renderer_Backend_createBuffer(
 				pState->pAllocator,
@@ -1600,6 +1602,7 @@ static void TRM_Renderer_Backend_createPassInstances(
 				uint32_t resource = pBackendPassInstance->pBindings[additionalBindingsOffset + additionalBindingIndex];
 				struct TRM_Renderer_Backend_Resource* pResource = NULL;
 				TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
+
 				pResourceState = &pBackendPassInstance->pResourceStates[resource];
 
 				VkAccessFlags accessFlags =
@@ -1652,7 +1655,6 @@ static void TRM_Renderer_Backend_createPassInstances(
 
 			pBackendPassInstance->info.draw.framebuffer = pState->pFrameInfos[pState->frameIndex].framebufferCount;
 			pState->pFrameInfos[pState->frameIndex].framebufferCount += 1;
-
 			break;
 		}
 		case TRM_RENDERER_PASS_TYPE_IMAGE_TO_IMAGE_COPY:
@@ -1785,6 +1787,13 @@ static void TRM_Renderer_Backend_createPassInstances(
 			break;
 		}
 		default: break;
+		}
+
+		for(uint32_t bindingIndex = 0; bindingIndex < pBackendPassInstance->bindingCount; ++bindingIndex)
+		{
+			struct TRM_Renderer_Backend_Resource* pResource = NULL;
+			TRM_Arena_get(pBackendPassInstance->pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
+			pResource->lastUsedSubmitionIndex = pState->frameIndex;
 		}
 	}
 }
@@ -2481,7 +2490,7 @@ void TRM_Renderer_beginFrame(void)
 			pResourceNode = pResourceNode->pNextNode;
 		}
 	}
-}              
+}
 
 void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassInstance* pPassInstances, uint32_t windowWidth, uint32_t windowHeight)
 {
@@ -2498,6 +2507,13 @@ void TRM_Renderer_endFrame(uint32_t passInstanceCount, struct TRM_Renderer_PassI
 	{
 		// TODO : factorize
 		vkDeviceWaitIdle(pState->device);
+
+		vkDestroySemaphore(pState->device, pState->pFrameInfos[pState->frameIndex].imageAvailableSemaphore, pState->pAllocator);
+		TRM_Renderer_Backend_createSemaphore(
+			pState->pAllocator,
+			pState->device,
+			&pState->pFrameInfos[pState->frameIndex].imageAvailableSemaphore);
+
 		for(uint32_t i = 0; i < pState->swapchainImageCount; ++i)
 		{
 			struct TRM_Renderer_Backend_Resource* pResource = NULL;

@@ -283,6 +283,9 @@ int main(void)
 
 				TRM_Renderer_createResource(resourceCreateInfo, &depthImage);
 			}
+
+			framebufferWidth = currentWindowWidth;
+			framebufferHeight = currentWindowHeight;
 		}
 
 		struct UniformBuffer uniformBufferData;
