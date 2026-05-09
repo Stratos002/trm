@@ -2477,6 +2477,8 @@ void TRM_start(struct TRM_NativeWindow nativeWindow)
 		exit(EXIT_FAILURE);
 	}
 
+	TRM_Memory_start();
+
 	TRM_Memory_allocate(sizeof(struct TRM_Backend_State), (void**)&pState);
 	TRM_Memory_memzero(sizeof(struct TRM_Backend_State), pState);
 
@@ -2581,6 +2583,8 @@ void TRM_terminate(void)
 
 		TRM_Memory_deallocate(pState);
 		pState = NULL;
+
+		TRM_Memory_terminate();
 	}
 }
 
