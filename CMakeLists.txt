@@ -1,29 +1,28 @@
 cmake_minimum_required(VERSION 3.10)
 
-set(PROJECT_NAME trm)
-project(${PROJECT_NAME})
+project(trm C)
 
 # C99
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# sources
-file(GLOB_RECURSE SOURCES src/*.c src/*.h)
+file(GLOB_RECURSE SOURCES
+    src/*.c
+)
 
-add_executable(
-	${PROJECT_NAME} 
-	${SOURCES})
+add_library(${PROJECT_NAME} STATIC ${SOURCES})
 
-target_include_directories(
-	${PROJECT_NAME} 
-	PRIVATE
-	${CMAKE_CURRENT_SOURCE_DIR}/external/volk
-	${CMAKE_CURRENT_SOURCE_DIR}/external/glfw/include
-	${CMAKE_CURRENT_SOURCE_DIR}/external/vulkan_headers
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/stb)
+target_include_directories(${PROJECT_NAME}
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
 
-# warnings and errors
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/volk
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/vulkan_headers
+)
+
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4 /WX)
 else()
@@ -33,32 +32,32 @@ else()
         -Wpedantic
         -Werror
         -Wshadow
-        -Wno-conversion #for stb
-        -Wno-sign-conversion #for stb
+        -Wconversion
+        -Wsign-conversion
         -Wstrict-prototypes
         -Wmissing-prototypes
         -Wnull-dereference
-        -Wno-double-promotion # for stb
+        -Wdouble-promotion
         -Werror=implicit-function-declaration
-        -Wformat=2)
+        -Wformat=2
+    )
 endif()
 
-# platform detection
 if(WIN32)
-	message(STATUS "platform : windows")
-	target_compile_definitions(${PROJECT_NAME} PRIVATE TRM_PLATFORM_WINDOWS)
+    message(STATUS "platform : windows")
+    target_compile_definitions(${PROJECT_NAME} PUBLIC TRM_PLATFORM_WINDOWS)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+
 elseif(UNIX AND NOT APPLE)
-	message(STATUS "platform : linux")
-	target_compile_definitions(${PROJECT_NAME} PRIVATE TRM_PLATFORM_LINUX)
+    message(STATUS "platform : linux")
+    target_compile_definitions(${PROJECT_NAME} PUBLIC TRM_PLATFORM_LINUX)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
+
 elseif(APPLE)
-	message(FATAL_ERROR "unsupported platform: macOS is not supported")
+    message(FATAL_ERROR "unsupported platform: macOS is not supported")
 else()
-	message(FATAL_ERROR "unknown platform")
+    message(FATAL_ERROR "unknown platform")
 endif()
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE VK_NO_PROTOTYPES)
-target_compile_definitions(${PROJECT_NAME} PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
-
-add_subdirectory(external/glfw)
-
-target_link_libraries(${PROJECT_NAME} PRIVATE glfw)
+target_compile_definitions(${PROJECT_NAME} PUBLIC VK_NO_PROTOTYPES)
+target_compile_definitions(${PROJECT_NAME} PUBLIC PROJECT_ROOT="${CMAKE_SOURCE_DIR}")

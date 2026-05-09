@@ -1,5 +1,5 @@
-#ifndef TRM_CONTAINERS
-#define TRM_CONTAINERS
+#ifndef TRM_CONTAINERS_H
+#define TRM_CONTAINERS_H
 
 #include <stdint.h>
 #include <stddef.h>

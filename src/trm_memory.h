@@ -1,5 +1,5 @@
-#ifndef TRM_MEMORY
-#define TRM_MEMORY
+#ifndef TRM_MEMORY_H
+#define TRM_MEMORY_H
 
 #include <stddef.h>
 
