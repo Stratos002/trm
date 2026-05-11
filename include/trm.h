@@ -3,7 +3,7 @@
 
 #if defined(TRM_PLATFORM_WINDOWS)
 #include <windows.h>
-#elif defined(TRM_PLATFORM_LINUX) // TODO support x11
+#elif defined(TRM_PLATFORM_LINUX)
 #include <wayland-client.h>
 #endif
 
@@ -25,7 +25,9 @@ enum TRM_BufferUsage
 	TRM_BUFFER_USAGE_STORAGE = (1 << 1),
 	TRM_BUFFER_USAGE_TRANSFER_SRC = (1 << 2),
 	TRM_BUFFER_USAGE_TRANSFER_DST = (1 << 3),
-	TRM_BUFFER_USAGE_VERTEX = (1 << 4)
+	TRM_BUFFER_USAGE_VERTEX = (1 << 4),
+	TRM_BUFFER_USAGE_INDEX = (1 << 5),
+	TRM_BUFFER_USAGE_MAX = (1 << 6)
 };
 
 struct TRM_BufferCreateInfo
@@ -230,12 +232,40 @@ struct TRM_ClearColor
 	float color[4];
 };
 
+enum TRM_DrawType
+{
+	TRM_DRAW_TYPE_VERTEX,
+	TRM_DRAW_TYPE_INDEXED
+};
+
+struct TRM_VertexDrawInfo
+{
+	bool useVertexBuffer;
+	uint32_t vertexCount;
+};
+
+struct TRM_IndexedDrawInfo
+{
+	uint32_t indexCount;
+	uint32_t indexBuffer;
+};
+
+struct TRM_DrawInfo
+{
+	union
+	{
+		struct TRM_VertexDrawInfo vertex;
+		struct TRM_IndexedDrawInfo indexed;
+	} info;
+};
+
 struct TRM_DrawPassInstance
 {
 	uint32_t pass;
+	enum TRM_DrawType drawType;
+	struct TRM_DrawInfo drawInfo;
 	uint32_t width;
 	uint32_t height;
-	uint32_t vertexCount;
 	uint32_t vertexBuffer;
 	uint32_t colorOutputImageCount;
 	uint32_t* pColorOutputImages;
