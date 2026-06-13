@@ -27,7 +27,8 @@ enum TRM_BufferUsage
 	TRM_BUFFER_USAGE_TRANSFER_DST = (1 << 3),
 	TRM_BUFFER_USAGE_VERTEX = (1 << 4),
 	TRM_BUFFER_USAGE_INDEX = (1 << 5),
-	TRM_BUFFER_USAGE_MAX = (1 << 6)
+	TRM_BUFFER_USAGE_DRAW_INDIRECT = (1 << 6),
+	TRM_BUFFER_USAGE_MAX = (1 << 7)
 };
 
 struct TRM_BufferCreateInfo
@@ -163,15 +164,10 @@ enum TRM_DescriptorType
 	TRM_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 };
 
-enum TRM_PassType
+enum TRM_PipelineType
 {
-	TRM_PASS_TYPE_DISPATCH,
-	TRM_PASS_TYPE_DRAW,
-	TRM_PASS_TYPE_IMAGE_TO_IMAGE_COPY,
-	TRM_PASS_TYPE_BUFFER_TO_IMAGE_COPY,
-	TRM_PASS_TYPE_BUFFER_TO_BUFFER_COPY,
-	TRM_PASS_TYPE_BLIT,
-	TRM_PASS_TYPE_PRESENT
+	TRM_PIPELINE_TYPE_COMPUTE,
+	TRM_PIPELINE_TYPE_GRAPHICS
 };
 
 enum TRM_ResourceAccessFlag
@@ -193,38 +189,52 @@ struct TRM_VertexAttributeDescription
 	enum TRM_Format format;
 };
 
-struct TRM_DrawPassCreateInfo
+struct TRM_GraphicsPipelineCreateInfo
 {
 	uint32_t vertexCodeSize;
-	void* pVertexCode;
+	const void* pVertexCode;
 	uint32_t fragmentCodeSize;
-	void* pFragmentCode;
+	const void* pFragmentCode;
 	uint32_t colorOutputImageCount;
 	enum TRM_Format* pColorOutputImageFormats;
 	enum TRM_Format depthOutputFormat;
 	uint32_t vertexStride;
 	uint32_t vertexAttributeDescriptionCount;
-	struct TRM_VertexAttributeDescription* pVertexAttributeDescriptions;
+	const struct TRM_VertexAttributeDescription* pVertexAttributeDescriptions;
 	uint32_t descriptorInfoCount;
-	struct TRM_DescriptorInfo* pDescriptorInfos;
+	const struct TRM_DescriptorInfo* pDescriptorInfos;
 };
 
-struct TRM_DispatchPassCreateInfo
+struct TRM_ComputePipelineCreateInfo
 {
 	uint32_t codeSize;
-	uint32_t* pCode;
+	const uint32_t* pCode;
 	uint32_t descriptorInfoCount;
-	struct TRM_DescriptorInfo* pDescriptorInfos;
+	const struct TRM_DescriptorInfo* pDescriptorInfos;
 };
 
-struct TRM_DispatchPassInstance
+enum TRM_PassType
 {
-	uint32_t pass;
+	TRM_PASS_TYPE_DISPATCH,
+	TRM_PASS_TYPE_DRAW_VERTEX,
+	TRM_PASS_TYPE_DRAW_INDEXED,
+	TRM_PASS_TYPE_DRAW_VERTEX_INDIRECT,
+	TRM_PASS_TYPE_DRAW_INDEXED_INDIRECT,
+	TRM_PASS_TYPE_IMAGE_TO_IMAGE_COPY,
+	TRM_PASS_TYPE_BUFFER_TO_IMAGE_COPY,
+	TRM_PASS_TYPE_BUFFER_TO_BUFFER_COPY,
+	TRM_PASS_TYPE_BLIT,
+	TRM_PASS_TYPE_PRESENT
+};
+
+struct TRM_DispatchPassInfo
+{
+	uint32_t pipeline;
 	uint32_t groupCountX;
 	uint32_t groupCountY;
 	uint32_t groupCountZ;
 	uint32_t bindingCount;
-	uint32_t* pBindings;
+	const uint32_t* pBindings;
 };
 
 struct TRM_ClearColor
@@ -232,50 +242,73 @@ struct TRM_ClearColor
 	float color[4];
 };
 
-enum TRM_DrawType
+struct TRM_DrawVertexPassInfo
 {
-	TRM_DRAW_TYPE_VERTEX,
-	TRM_DRAW_TYPE_INDEXED
-};
-
-struct TRM_VertexDrawInfo
-{
-	bool useVertexBuffer;
-	uint32_t vertexCount;
-};
-
-struct TRM_IndexedDrawInfo
-{
-	uint32_t indexCount;
-	uint32_t indexBuffer;
-};
-
-struct TRM_DrawInfo
-{
-	union
-	{
-		struct TRM_VertexDrawInfo vertex;
-		struct TRM_IndexedDrawInfo indexed;
-	} info;
-};
-
-struct TRM_DrawPassInstance
-{
-	uint32_t pass;
-	enum TRM_DrawType drawType;
-	struct TRM_DrawInfo drawInfo;
+	uint32_t pipeline;
 	uint32_t width;
 	uint32_t height;
+	uint32_t vertexCount;
+	bool useVertexBuffer;
 	uint32_t vertexBuffer;
 	uint32_t colorOutputImageCount;
 	uint32_t* pColorOutputImages;
-	struct TRM_ClearColor* pClearColors;
+	const struct TRM_ClearColor* pClearColors;
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	uint32_t* pBindings;
+	const uint32_t* pBindings;
 };
 
-struct TRM_CopyImageToImagePassInstanceInfo
+struct TRM_DrawIndexedPassInfo
+{
+	uint32_t pipeline;
+	uint32_t width;
+	uint32_t height;
+	uint32_t indexCount;
+	uint32_t indexBuffer;
+	uint32_t vertexBuffer;
+	uint32_t colorOutputImageCount;
+	uint32_t* pColorOutputImages;
+	const struct TRM_ClearColor* pClearColors;
+	uint32_t depthOutputImage;
+	uint32_t bindingCount;
+	const uint32_t* pBindings;
+};
+
+struct TRM_DrawVertexIndirectPassInfo
+{
+	uint32_t pipeline;
+	uint32_t width;
+	uint32_t height;
+	uint32_t drawCount;
+	uint32_t buffer;
+	bool useVertexBuffer;
+	uint32_t vertexBuffer;
+	uint32_t colorOutputImageCount;
+	uint32_t* pColorOutputImages;
+	const struct TRM_ClearColor* pClearColors;
+	uint32_t depthOutputImage;
+	uint32_t bindingCount;
+	const uint32_t* pBindings;
+};
+
+struct TRM_DrawIndexedIndirectPassInfo
+{
+	uint32_t pipeline;
+	uint32_t width;
+	uint32_t height;
+	uint32_t drawCount;
+	uint32_t buffer;
+	uint32_t indexBuffer;
+	uint32_t vertexBuffer;
+	uint32_t colorOutputImageCount;
+	uint32_t* pColorOutputImages;
+	const struct TRM_ClearColor* pClearColors;
+	uint32_t depthOutputImage;
+	uint32_t bindingCount;
+	const uint32_t* pBindings;
+};
+
+struct TRM_CopyImageToImagePassInfo
 {
 	uint32_t srcImage;
 	uint32_t dstImage;
@@ -283,7 +316,7 @@ struct TRM_CopyImageToImagePassInstanceInfo
 	uint32_t height;
 };
 
-struct TRM_CopyBufferToImagePassInstanceInfo
+struct TRM_CopyBufferToImagePassInfo
 {
 	uint32_t srcBuffer;
 	uint32_t dstImage;
@@ -291,14 +324,14 @@ struct TRM_CopyBufferToImagePassInstanceInfo
 	uint32_t height;
 };
 
-struct TRM_CopyBufferToBufferPassInstanceInfo
+struct TRM_CopyBufferToBufferPassInfo
 {
 	uint32_t srcBuffer;
 	uint32_t dstBuffer;
 	uint32_t sizeInBytes;
 };
 
-struct TRM_BlitPassInstanceInfo
+struct TRM_BlitPassInfo
 {
 	uint32_t srcImage;
 	uint32_t dstImage;
@@ -308,17 +341,20 @@ struct TRM_BlitPassInstanceInfo
 	uint32_t dstHeight;
 };
 
-struct TRM_PassInstance
+struct TRM_Pass
 {
 	enum TRM_PassType type;
 	union
 	{
-		struct TRM_DispatchPassInstance dispatch;
-		struct TRM_DrawPassInstance draw;
-		struct TRM_CopyImageToImagePassInstanceInfo imageToImageCopy;
-		struct TRM_CopyBufferToImagePassInstanceInfo bufferToImageCopy;
-		struct TRM_CopyBufferToBufferPassInstanceInfo bufferToBufferCopy;
-		struct TRM_BlitPassInstanceInfo blit;
+		struct TRM_DispatchPassInfo dispatch;
+		struct TRM_DrawVertexPassInfo drawVertex;
+		struct TRM_DrawIndexedPassInfo drawIndexed;
+		struct TRM_DrawVertexIndirectPassInfo drawVertexIndirect;
+		struct TRM_DrawIndexedIndirectPassInfo drawIndexedIndirect;
+		struct TRM_CopyImageToImagePassInfo imageToImageCopy;
+		struct TRM_CopyBufferToImagePassInfo bufferToImageCopy;
+		struct TRM_CopyBufferToBufferPassInfo bufferToBufferCopy;
+		struct TRM_BlitPassInfo blit;
 	} info;
 };
 
@@ -339,7 +375,7 @@ void TRM_terminate(void);
 
 void TRM_beginFrame(void);
 
-void TRM_endFrame(uint32_t passInstanceCount, struct TRM_PassInstance* pPassInstances, uint32_t windowWidth, uint32_t windowHeight);
+void TRM_endFrame(uint32_t passCount, struct TRM_Pass* pPasses, uint32_t windowWidth, uint32_t windowHeight);
 
 void TRM_createResource(struct TRM_ResourceCreateInfo info, uint32_t* pHandle);
 
@@ -347,10 +383,14 @@ void TRM_destroyResource(uint32_t handle);
 
 void TRM_writeBuffer(uint32_t sizeInBytes, const void* pData, uint32_t handle);
 
-void TRM_createDispatchPass(struct TRM_DispatchPassCreateInfo info, uint32_t* pHandle);
+void TRM_createComputePipeline(struct TRM_ComputePipelineCreateInfo info, uint32_t* pHandle);
 
-void TRM_createDrawPass(struct TRM_DrawPassCreateInfo info, uint32_t* pHandle);
+void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint32_t* pHandle);
 
-void TRM_destroyPass(uint32_t handle);
+void TRM_destroyPipeline(uint32_t handle);
+
+uint32_t TRM_getDrawIndirectCommandSize(void);
+
+uint32_t TRM_getDrawIndexedIndirectCommandSize(void);
 
 #endif
