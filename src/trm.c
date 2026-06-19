@@ -1398,16 +1398,30 @@ static VkBufferUsageFlagBits TRM_Backend_convertBufferUsage(enum TRM_BufferUsage
 	}
 }
 
+static VkImageUsageFlagBits TRM_Backend_convertImageUsage(enum TRM_ImageUsage imageUsage)
+{
+	switch(imageUsage)
+	{
+	case TRM_IMAGE_USAGE_COLOR_ATTACHMENT: return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	case TRM_IMAGE_USAGE_DEPTH_ATTACHMENT: return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	case TRM_IMAGE_USAGE_SAMPLED: return VK_IMAGE_USAGE_SAMPLED_BIT;
+	case TRM_IMAGE_USAGE_STORAGE: return VK_IMAGE_USAGE_STORAGE_BIT;
+	case TRM_IMAGE_USAGE_TRANSFER_SRC: return VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	case TRM_IMAGE_USAGE_TRANSFER_DST: return VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	default: exit(EXIT_FAILURE);
+	}
+}
+
 static void TRM_Backend_createResource(struct TRM_ResourceCreateInfo info, uint32_t* pHandle)
 {
 	if(info.type == TRM_RESOURCE_TYPE_BUFFER)
 	{
 		VkBufferUsageFlags bufferUsage = 0;
-		for(uint32_t bit = 0; bit < TRM_BUFFER_USAGE_MAX; ++bit)
+		for(uint32_t bit = 1; bit < TRM_BUFFER_USAGE_MAX; bit <<= 1)
 		{
-			if((info.info.buffer.usage & (1 << bit)) != 0)
+			if((info.info.buffer.usage & bit) != 0)
 			{
-				bufferUsage |= TRM_Backend_convertBufferUsage((info.info.buffer.usage & (1 << bit)));
+				bufferUsage |= TRM_Backend_convertBufferUsage((info.info.buffer.usage & bit));
 			}
 		}
 
@@ -1493,42 +1507,29 @@ static void TRM_Backend_createResource(struct TRM_ResourceCreateInfo info, uint3
 	}
 	else
 	{
-		VkImageAspectFlags imageAspect = 0;
 		VkImageUsageFlags imageUsage = 0;
-
-		if((info.info.image.usage & TRM_IMAGE_USAGE_COLOR_ATTACHMENT) != 0)
+		for(uint32_t bit = 1; bit < TRM_IMAGE_USAGE_MAX; bit <<= 1)
 		{
-			imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+			if((info.info.image.usage & bit) != 0)
+			{
+				imageUsage |= TRM_Backend_convertImageUsage((info.info.image.usage & bit));
+			}
+		}
+
+		// maybe we should expose that explicitly
+		VkImageAspectFlags imageAspect = 0;
+		if(info.info.image.usage & TRM_IMAGE_USAGE_COLOR_ATTACHMENT)
+		{
 			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
 		}
 
-		if((info.info.image.usage & TRM_IMAGE_USAGE_DEPTH_ATTACHMENT) != 0)
+		if(info.info.image.usage & TRM_IMAGE_USAGE_DEPTH_ATTACHMENT)
 		{
-			imageUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 			imageAspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
 		}
 
-		if((info.info.image.usage & TRM_IMAGE_USAGE_SAMPLED) != 0)
+		if(imageAspect == 0) // default
 		{
-			imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-		}
-
-		if((info.info.image.usage & TRM_IMAGE_USAGE_STORAGE) != 0)
-		{
-			imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
-			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-		}
-
-		if((info.info.image.usage & TRM_IMAGE_USAGE_TRANSFER_SRC) != 0)
-		{
-			imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
-		}
-
-		if((info.info.image.usage & TRM_IMAGE_USAGE_TRANSFER_DST) != 0)
-		{
-			imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 			imageAspect |= VK_IMAGE_ASPECT_COLOR_BIT;
 		}
 
