@@ -1,0 +1,7 @@
+* les descriptor pool, c'est un bloc de mémoire GPU host visible
+reset/allouer un descriptor set dedans c'est gratos (c'est juste incrementer un ptr), il vaut mieux reset la pool en entier
+vkCmdBindDescriptorSet va juste donner l'addresse du descriptor set
+
+* faire de la sous alloc pour les resources (allouer un gros bloc une fois) ne pas confondre avec les sous resources, qui sont  juste des infos sur l'état de la data (layout) et s'il faut la sync (last access : write)
+
+

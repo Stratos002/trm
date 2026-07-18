@@ -371,27 +371,16 @@ struct TRM_NativeWindow
 };
 
 void TRM_start(struct TRM_NativeWindow nativeWindow);
-
 void TRM_terminate(void);
-
 void TRM_beginFrame(void);
-
 void TRM_endFrame(uint32_t passCount, struct TRM_Pass* pPasses, uint32_t windowWidth, uint32_t windowHeight);
-
 void TRM_createResource(struct TRM_ResourceCreateInfo info, uint32_t* pHandle);
-
 void TRM_destroyResource(uint32_t handle);
-
 void TRM_writeBuffer(uint32_t sizeInBytes, const void* pData, uint32_t handle);
-
 void TRM_createComputePipeline(struct TRM_ComputePipelineCreateInfo info, uint32_t* pHandle);
-
 void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint32_t* pHandle);
-
 void TRM_destroyPipeline(uint32_t handle);
-
 uint32_t TRM_getDrawIndirectCommandSize(void);
-
 uint32_t TRM_getDrawIndexedIndirectCommandSize(void);
 
 #endif
