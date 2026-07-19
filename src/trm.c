@@ -806,8 +806,8 @@ static void TRM_Backend_createSampler(const VkAllocationCallbacks* pAllocator, V
 	samplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 	samplerCreateInfo.pNext = NULL;
 	samplerCreateInfo.flags = 0;
-	samplerCreateInfo.magFilter = VK_FILTER_NEAREST;
-	samplerCreateInfo.minFilter = VK_FILTER_NEAREST;
+	samplerCreateInfo.magFilter = VK_FILTER_LINEAR;
+	samplerCreateInfo.minFilter = VK_FILTER_LINEAR;
 	samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	samplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 	samplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -2050,8 +2050,8 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 		{
 			TRM_Memory_memcpy(
 				sizeof(float) * 4,
-				pass.info.drawIndexed.pClearColors[i].color,
-				backendPass.info.drawIndexed.pClearColors[i].color.float32);
+				pass.info.drawVertex.pClearColors[i].color,
+				backendPass.info.drawVertex.pClearColors[i].color.float32);
 		}
 		backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.depth = 1.0f;
 		backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.stencil = 0;
@@ -2118,6 +2118,8 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 		pBindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
+
+	TRM_Memory_deallocate(pBindings);
 	
 	return backendPass;
 }
@@ -2294,6 +2296,8 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 		*pDescriptorSet,
 		swapchainImageIndex);
 
+	TRM_Memory_deallocate(pBindings);
+
 	return backendPass;
 }
 
@@ -2402,8 +2406,8 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 		{
 			TRM_Memory_memcpy(
 				sizeof(float) * 4,
-				pass.info.drawIndexed.pClearColors[i].color,
-				backendPass.info.drawIndexed.pClearColors[i].color.float32);
+				pass.info.drawVertexIndirect.pClearColors[i].color,
+				backendPass.info.drawVertexIndirect.pClearColors[i].color.float32);
 		}
 		backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
 		backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.stencil = 0;
@@ -2470,6 +2474,8 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 		pBindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
+
+	TRM_Memory_deallocate(pBindings);
 
 	return backendPass;
 }
@@ -2656,13 +2662,15 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 		*pDescriptorSet,
 		swapchainImageIndex);
 
+	TRM_Memory_deallocate(pBindings);
+
 	return backendPass;
 }
 
 static struct TRM_Backend_Pass TRM_Backend_createImageToImageCopyPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	backendPass.type = TRM_PASS_TYPE_BUFFER_TO_IMAGE_COPY;
+	backendPass.type = TRM_PASS_TYPE_IMAGE_TO_IMAGE_COPY;
 	backendPass.info.imageToImageCopy.width = pass.info.imageToImageCopy.width;
 	backendPass.info.imageToImageCopy.height = pass.info.imageToImageCopy.height;
 
@@ -2730,6 +2738,7 @@ static struct TRM_Backend_Pass TRM_Backend_createBufferToBufferCopyPass(struct T
 {		
 	struct TRM_Backend_Pass backendPass = {0};
 	backendPass.type = TRM_PASS_TYPE_BUFFER_TO_BUFFER_COPY;
+	backendPass.info.bufferToBufferCopy.sizeInBytes = pass.info.bufferToBufferCopy.sizeInBytes;
 	
 	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
