@@ -143,6 +143,7 @@ struct TRM_ImageCreateInfo
 {
 	uint32_t width;
 	uint32_t height;
+	uint32_t mipCount;
 	enum TRM_Format format;
 	enum TRM_ImageUsage usage;
 };
@@ -214,6 +215,12 @@ struct TRM_ComputePipelineCreateInfo
 	const struct TRM_DescriptorInfo* pDescriptorInfos;
 };
 
+struct TRM_Binding
+{
+	uint32_t resource;
+	uint32_t mip;
+};
+
 enum TRM_PassType
 {
 	TRM_PASS_TYPE_DISPATCH,
@@ -235,7 +242,7 @@ struct TRM_DispatchPassInfo
 	uint32_t groupCountY;
 	uint32_t groupCountZ;
 	uint32_t bindingCount;
-	const uint32_t* pBindings;
+	const struct TRM_Binding* pBindings;
 };
 
 struct TRM_ClearColor
@@ -256,7 +263,7 @@ struct TRM_DrawVertexPassInfo
 	const struct TRM_ClearColor* pClearColors;
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const uint32_t* pBindings;
+	const struct TRM_Binding* pBindings;
 };
 
 struct TRM_DrawIndexedPassInfo
@@ -272,7 +279,7 @@ struct TRM_DrawIndexedPassInfo
 	const struct TRM_ClearColor* pClearColors;
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const uint32_t* pBindings;
+	const struct TRM_Binding* pBindings;
 };
 
 struct TRM_DrawVertexIndirectPassInfo
@@ -289,7 +296,7 @@ struct TRM_DrawVertexIndirectPassInfo
 	const struct TRM_ClearColor* pClearColors;
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const uint32_t* pBindings;
+	const struct TRM_Binding* pBindings;
 };
 
 struct TRM_DrawIndexedIndirectPassInfo
@@ -306,7 +313,7 @@ struct TRM_DrawIndexedIndirectPassInfo
 	const struct TRM_ClearColor* pClearColors;
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const uint32_t* pBindings;
+	const struct TRM_Binding* pBindings;
 };
 
 struct TRM_CopyImageToImagePassInfo

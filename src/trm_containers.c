@@ -46,6 +46,16 @@ void TRM_DynamicArray_at(uint32_t index, const struct TRM_DynamicArray* pDynamic
 	TRM_Memory_memcpy(pDynamicArray->elementSize, (uint8_t*)pDynamicArray->pData + pDynamicArray->elementSize * index, pElement);
 }
 
+void TRM_DynamicArray_getPtrAt(uint32_t index, const struct TRM_DynamicArray* pDynamicArray, void** ppElement)
+{
+	if(index >= pDynamicArray->elementCount)
+	{
+		exit(EXIT_FAILURE);
+	}
+
+	*ppElement = (uint8_t*)pDynamicArray->pData + pDynamicArray->elementSize;
+}
+
 /* Arena */
 
 void TRM_Arena_create(size_t elementSize, uint32_t elementCapacity, struct TRM_Arena* pArena)

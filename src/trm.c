@@ -16,6 +16,7 @@
 #define TRM_BACKEND_MAX_PIPELINE_COUNT 64
 #define TRM_MAX_DESCRIPTOR_SET_PER_FRAME_COUNT 32
 #define TRM_MAX_FRAMEBUFFER_PER_FRAME_COUNT 8
+#define TRM_MAX_MIP_PER_IMAGE_COUNT 16
 
 // for later
 /*
@@ -61,7 +62,9 @@ struct TRM_Backend_BufferResourceInfo
 struct TRM_Backend_ImageResourceInfo
 {
 	VkImage image;
-	VkImageView imageView;
+	uint32_t mipCount;
+	VkImageView allMipsImageView;
+	VkImageView singleMipImageViews[TRM_MAX_MIP_PER_IMAGE_COUNT];
 	VkImageAspectFlags aspect;
 	VkDeviceMemory memory;
 	bool swapchainImage;
@@ -137,6 +140,7 @@ struct TRM_Backend_drawVertexPassInfo
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
 	VkClearValue* pClearColors;
+	uint32_t vertexBuffer;
 };
 
 struct TRM_Backend_drawIndexedPassInfo
@@ -149,6 +153,8 @@ struct TRM_Backend_drawIndexedPassInfo
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
 	VkClearValue* pClearColors;
+	uint32_t vertexBuffer;
+	uint32_t indexBuffer;
 };
 
 struct TRM_Backend_drawVertexIndirectPassInfo
@@ -162,6 +168,8 @@ struct TRM_Backend_drawVertexIndirectPassInfo
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
 	VkClearValue* pClearColors;
+	uint32_t vertexBuffer;
+	uint32_t indirectCommandBuffer;
 };
 
 struct TRM_Backend_drawIndexedIndirectPassInfo
@@ -174,23 +182,32 @@ struct TRM_Backend_drawIndexedIndirectPassInfo
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
 	VkClearValue* pClearColors;
+	uint32_t vertexBuffer;
+	uint32_t indexBuffer;
+	uint32_t indirectCommandBuffer;
 };
 
 struct TRM_Backend_ImageToImagePassInfo
 {
 	uint32_t width;
 	uint32_t height;
+	uint32_t srcImage;
+	uint32_t dstImage;
 };
 
 struct TRM_Backend_BufferToImagePassInfo
 {
 	uint32_t width;
 	uint32_t height;
+	uint32_t srcBuffer;
+	uint32_t dstImage;
 };
 
 struct TRM_Backend_BufferToBufferPassInfo
 {
 	uint32_t sizeInBytes;
+	uint32_t srcBuffer;
+	uint32_t dstBuffer;
 };
 
 struct TRM_Backend_BlitPassInfo
@@ -199,14 +216,27 @@ struct TRM_Backend_BlitPassInfo
 	uint32_t srcHeight;
 	uint32_t dstWidth;
 	uint32_t dstHeight;
+	uint32_t srcImage;
+	uint32_t dstImage;
+};
+
+struct TRM_Backend_Binding
+{
+	uint32_t resource;
+	uint32_t mip;
+	VkImageLayout layout;
+};
+
+struct TRM_Backend_ExpectedResourceState
+{
+	uint32_t resource;
+	struct TRM_Backend_ResourceState state;
 };
 
 struct TRM_Backend_Pass
 {
 	enum TRM_PassType type;
-	uint32_t bindingCount;
-	uint32_t* pBindings;
-	struct TRM_Backend_ResourceState* pResourceStates;
+	struct TRM_DynamicArray expectedResourceStates;
 	union
 	{
 		struct TRM_Backend_DispatchPassInfo dispatch;
@@ -705,6 +735,7 @@ static void TRM_Backend_createImage(
 	VkDevice device,
 	uint32_t width,
 	uint32_t height,
+	uint32_t mipCount,
 	VkFormat format,
 	VkImageLayout layout,
 	VkImageUsageFlags usage,
@@ -720,7 +751,7 @@ static void TRM_Backend_createImage(
 	imageCreateInfo.extent.width = width;
 	imageCreateInfo.extent.height = height;
 	imageCreateInfo.extent.depth = 1;
-	imageCreateInfo.mipLevels = 1;
+	imageCreateInfo.mipLevels = mipCount;
 	imageCreateInfo.arrayLayers = 1;
 	imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 	imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -740,6 +771,8 @@ static void TRM_Backend_createImageView(
 	const VkAllocationCallbacks* pAllocator,
 	VkDevice device,
 	VkImage image,
+	uint32_t baseMip,
+	uint32_t mipCount,
 	VkFormat format,
 	VkImageAspectFlags imageAspect,
 	VkImageView* pImageView)
@@ -756,8 +789,8 @@ static void TRM_Backend_createImageView(
 	imageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
 	imageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
 	imageViewCreateInfo.subresourceRange.aspectMask = imageAspect;
-	imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-	imageViewCreateInfo.subresourceRange.levelCount = 1;
+	imageViewCreateInfo.subresourceRange.baseMipLevel = baseMip;
+	imageViewCreateInfo.subresourceRange.levelCount = mipCount;
 	imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
 	imageViewCreateInfo.subresourceRange.layerCount = 1;
 
@@ -785,7 +818,7 @@ static void TRM_Backend_createSampler(const VkAllocationCallbacks* pAllocator, V
 	samplerCreateInfo.compareEnable = VK_FALSE;
 	samplerCreateInfo.compareOp = VK_COMPARE_OP_ALWAYS;
 	samplerCreateInfo.minLod = 0.0f;
-	samplerCreateInfo.maxLod = 0.0f;
+	samplerCreateInfo.maxLod = (float)TRM_MAX_MIP_PER_IMAGE_COUNT;
 	samplerCreateInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 	samplerCreateInfo.unnormalizedCoordinates = VK_FALSE;
 
@@ -1282,6 +1315,21 @@ static void TRM_Backend_mergeLayouts(VkImageLayout a, VkImageLayout b, VkImageLa
 	*pResult = VK_IMAGE_LAYOUT_GENERAL;
 }
 
+static VkAccessFlags TRM_Backend_convertAccessFlags(uint32_t flags)
+{
+	VkAccessFlags result = 0;
+	if((flags & TRM_SHADER_ACCESS_FLAG_READ) != 0)
+	{
+		result |= VK_ACCESS_SHADER_READ_BIT;
+	}
+
+	if((flags & TRM_SHADER_ACCESS_FLAG_WRITE) != 0)
+	{
+		result |= VK_ACCESS_SHADER_WRITE_BIT;
+	}
+	return result;
+}
+
 static VkFormat TRM_Backend_convertFormat(enum TRM_Format format)
 {
 	if(format == TRM_SWAPCHAIN_IMAGE_FORMAT)
@@ -1539,6 +1587,7 @@ static void TRM_Backend_createResource(struct TRM_ResourceCreateInfo info, uint3
 		resource.lastFrameIndexNoWarp = 1;
 		resource.info.image.aspect = imageAspect;
 		resource.info.image.swapchainImage = false;
+		resource.info.image.mipCount = info.info.image.mipCount;
 		resource.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		resource.state.access = VK_ACCESS_NONE;
 		resource.state.layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1548,6 +1597,7 @@ static void TRM_Backend_createResource(struct TRM_ResourceCreateInfo info, uint3
 			pState->device,
 			info.info.image.width,
 			info.info.image.height,
+			info.info.image.mipCount,
 			TRM_Backend_convertFormat(info.info.image.format),
 			resource.state.layout,
 			imageUsage,
@@ -1568,9 +1618,24 @@ static void TRM_Backend_createResource(struct TRM_ResourceCreateInfo info, uint3
 			pState->pAllocator,
 			pState->device,
 			resource.info.image.image,
+			0,
+			resource.info.image.mipCount,
 			TRM_Backend_convertFormat(info.info.image.format),
 			resource.info.image.aspect,
-			&resource.info.image.imageView);
+			&resource.info.image.allMipsImageView);
+
+		for(uint32_t i = 0; i < resource.info.image.mipCount; ++i)
+		{
+			TRM_Backend_createImageView(
+				pState->pAllocator,
+				pState->device,
+				resource.info.image.image,
+				i,
+				1,
+				TRM_Backend_convertFormat(info.info.image.format),
+				resource.info.image.aspect,
+				&resource.info.image.singleMipImageViews[i]);
+		}
 
 		TRM_Arena_add((void*)&resource, &pState->resourcePool, pHandle);
 	}
@@ -1610,8 +1675,14 @@ static void TRM_Backend_destroyResource(uint32_t handle)
 		{
 			vkDestroyImage(pState->device, pResource->info.image.image, pState->pAllocator);
 			vkFreeMemory(pState->device, pResource->info.image.memory, pState->pAllocator);
+
+			for(uint32_t i = 0; i < pResource->info.image.mipCount; ++i)
+			{
+				vkDestroyImageView(pState->device, pResource->info.image.singleMipImageViews[i], pState->pAllocator);
+			}
 		}
-		vkDestroyImageView(pState->device, pResource->info.image.imageView, pState->pAllocator);
+		
+		vkDestroyImageView(pState->device, pResource->info.image.allMipsImageView, pState->pAllocator);
 	}
 
 	TRM_Arena_remove(handle, &pState->resourcePool);
@@ -1669,13 +1740,16 @@ static void TRM_Backend_recreateSwapchain(uint32_t width, uint32_t height)
 			pState->pAllocator,
 			pState->device,
 			pSwapchainImages[i],
+			0,
+			1,
 			pState->swapchainFormat,
 			VK_IMAGE_ASPECT_COLOR_BIT,
-			&swapchainColorImage.info.image.imageView);
+			&swapchainColorImage.info.image.allMipsImageView);
 
 		swapchainColorImage.info.image.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 		swapchainColorImage.info.image.memory = VK_NULL_HANDLE;
 		swapchainColorImage.info.image.swapchainImage = true;
+		swapchainColorImage.info.image.mipCount = 1;
 		swapchainColorImage.state.stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		swapchainColorImage.state.access = VK_ACCESS_NONE;
 		swapchainColorImage.state.layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1697,8 +1771,7 @@ static void TRM_Backend_recreateSwapchain(uint32_t width, uint32_t height)
 static void TRM_Backend_updateDescriptorSet(
 	uint32_t descriptorCount, 
 	const struct TRM_DescriptorInfo* pDescriptorInfos, 
-	const uint32_t* pBindings, 
-	const struct TRM_Backend_ResourceState* pResourceStates, 
+	const struct TRM_Backend_Binding* pBindings,
 	VkDescriptorSet descriptorSet,
 	uint32_t swapchainImageIndex)
 {
@@ -1709,58 +1782,56 @@ static void TRM_Backend_updateDescriptorSet(
 	TRM_Memory_allocate(sizeof(VkDescriptorBufferInfo) * descriptorCount, (void**)&pBufferInfos);
 	TRM_Memory_allocate(sizeof(VkDescriptorImageInfo) * descriptorCount, (void**)&pImageInfos);
 
-	for(uint32_t bindingIndex = 0; bindingIndex < descriptorCount; ++bindingIndex)
+	for(uint32_t i = 0; i < descriptorCount; ++i)
 	{
-		VkDescriptorType descriptorType = TRM_Backend_convertDescriptorType(pDescriptorInfos[bindingIndex].descriptorType);
-		uint32_t resource = TRM_Backend_translateResource(pBindings[bindingIndex], swapchainImageIndex);
+		VkDescriptorType descriptorType = TRM_Backend_convertDescriptorType(pDescriptorInfos[i].descriptorType);
+		uint32_t resource = TRM_Backend_translateResource(pBindings[i].resource, swapchainImageIndex);
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		const struct TRM_Backend_ResourceState* pResourceState = &pResourceStates[resource];
-
-		pWrites[bindingIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		pWrites[bindingIndex].pNext = NULL;
-		pWrites[bindingIndex].dstBinding = bindingIndex;
-		pWrites[bindingIndex].dstArrayElement = 0;
-		pWrites[bindingIndex].descriptorCount = 1;
-		pWrites[bindingIndex].descriptorType = descriptorType;
+		pWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		pWrites[i].pNext = NULL;
+		pWrites[i].dstBinding = i;
+		pWrites[i].dstArrayElement = 0;
+		pWrites[i].descriptorCount = 1;
+		pWrites[i].descriptorType = descriptorType;
 
 		if(descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 		{
-			pBufferInfos[bindingIndex].buffer = pResource->info.buffer.buffer;
-			pBufferInfos[bindingIndex].offset = 0;
-			pBufferInfos[bindingIndex].range = VK_WHOLE_SIZE;
+			pBufferInfos[i].buffer = pResource->info.buffer.buffer;
+			pBufferInfos[i].offset = 0;
+			pBufferInfos[i].range = VK_WHOLE_SIZE;
 
-			pWrites[bindingIndex].pBufferInfo = &pBufferInfos[bindingIndex];
-			pWrites[bindingIndex].pImageInfo = NULL;
-			pWrites[bindingIndex].pTexelBufferView = NULL;
+			pWrites[i].pBufferInfo = &pBufferInfos[i];
+			pWrites[i].pImageInfo = NULL;
+			pWrites[i].pTexelBufferView = NULL;
 
 		}
 		else if(descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 		{
-			pImageInfos[bindingIndex].imageLayout = pResourceState->layout;
-			pImageInfos[bindingIndex].imageView = pResource->info.image.imageView;
-			pImageInfos[bindingIndex].sampler = VK_NULL_HANDLE;
+			pImageInfos[i].imageLayout = pBindings[i].layout;
+			pImageInfos[i].imageView = pResource->info.image.singleMipImageViews[pBindings[i].mip];
+			pImageInfos[i].sampler = VK_NULL_HANDLE;
 
-			pWrites[bindingIndex].pBufferInfo = NULL;
-			pWrites[bindingIndex].pImageInfo = &pImageInfos[bindingIndex];
+			pWrites[i].pBufferInfo = NULL;
+			pWrites[i].pImageInfo = &pImageInfos[i];
 		}
 		else if(descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 		{
-			pImageInfos[bindingIndex].imageLayout = pResourceState->layout;
-			pImageInfos[bindingIndex].imageView = pResource->info.image.imageView;
-			pImageInfos[bindingIndex].sampler = pState->globalSampler;
+			pImageInfos[i].imageLayout = pBindings[i].layout;
+			pImageInfos[i].imageView = pResource->info.image.allMipsImageView;
+			pImageInfos[i].sampler = pState->globalSampler;
 
-			pWrites[bindingIndex].pBufferInfo = NULL;
-			pWrites[bindingIndex].pImageInfo = &pImageInfos[bindingIndex];
+			pWrites[i].pBufferInfo = NULL;
+			pWrites[i].pImageInfo = &pImageInfos[i];
 		}
 		else
 		{
 			exit(EXIT_FAILURE);
 		}
 
-		pWrites[bindingIndex].dstSet = descriptorSet;
-		pWrites[bindingIndex].pTexelBufferView = NULL;
+		pWrites[i].dstSet = descriptorSet;
+		pWrites[i].pTexelBufferView = NULL;
 	}
 
 	vkUpdateDescriptorSets(pState->device, descriptorCount, pWrites, 0, NULL);
@@ -1770,61 +1841,89 @@ static void TRM_Backend_updateDescriptorSet(
 	TRM_Memory_deallocate(pWrites);
 }
 
+static void TRM_Backend_addExpectedResourceState(struct TRM_Backend_ExpectedResourceState expectedResourceState, struct TRM_DynamicArray* pExpectedResourceStates)
+{
+	for(uint32_t i = 0; i < pExpectedResourceStates->elementCount; ++i)
+	{
+		struct TRM_Backend_ExpectedResourceState* pCurrentExpectedResourceState = NULL;
+		TRM_DynamicArray_getPtrAt(i, pExpectedResourceStates, (void**)&pCurrentExpectedResourceState);
+
+		if(expectedResourceState.resource == pCurrentExpectedResourceState->resource)
+		{
+			// merge states
+			pCurrentExpectedResourceState->state.access |= expectedResourceState.state.access;
+			TRM_Backend_mergeLayouts(pCurrentExpectedResourceState->state.layout, expectedResourceState.state.layout, &pCurrentExpectedResourceState->state.layout);
+			pCurrentExpectedResourceState->state.stage |= expectedResourceState.state.stage;
+			return;
+		}
+	}
+
+	TRM_DynamicArray_push(&expectedResourceState, pExpectedResourceStates);
+}
+
 static struct TRM_Backend_Pass TRM_Backend_createDispatchPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-	
 	backendPass.type = TRM_PASS_TYPE_DISPATCH;
-	backendPass.bindingCount = pass.info.dispatch.bindingCount;
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
-	{
-		backendPass.pBindings[bindingIndex] = 
-			TRM_Backend_translateResource(pass.info.dispatch.pBindings[bindingIndex], swapchainImageIndex);
-	}
-
 	backendPass.info.dispatch.pipeline = pass.info.dispatch.pipeline;
 	backendPass.info.dispatch.groupCountX = pass.info.dispatch.groupCountX;
 	backendPass.info.dispatch.groupCountY = pass.info.dispatch.groupCountY;
 	backendPass.info.dispatch.groupCountZ = pass.info.dispatch.groupCountZ;
 
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
+
+	// merge all resource states
+	for(uint32_t i = 0; i < pass.info.dispatch.bindingCount; ++i)
 	{
-		uint32_t resource = backendPass.pBindings[bindingIndex];
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.dispatch.pBindings[i].resource, swapchainImageIndex);
+		
 		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
-		struct TRM_Backend_ResourceState* pResourceState = &backendPass.pResourceStates[resource];
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pResource);
 		struct TRM_Backend_Pipeline* pPipeline = NULL;
 		TRM_Arena_get(backendPass.info.dispatch.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
-		VkAccessFlags accessFlags =
-			(pPipeline->info.compute.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_READ) != 0 ?
-			VK_ACCESS_SHADER_READ_BIT :
-			0;
-		accessFlags |=
-			((pPipeline->info.compute.pDescriptorInfos[bindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_WRITE) != 0 ?
-				VK_ACCESS_SHADER_WRITE_BIT :
-				0);
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.compute.pDescriptorInfos[i].resourceAccessFlags);
 
-		pResourceState->access |= accessFlags;
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
 			layout =
-				pPipeline->info.compute.pDescriptorInfos[bindingIndex].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+				pPipeline->info.compute.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 		}
-		pResourceState->stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		
+		expectedResourceState.state.layout = layout;
+		expectedResourceState.state.access = accessFlags;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+	}
+
+	// bindings
+	uint32_t bindingCount = pass.info.dispatch.bindingCount;
+	struct TRM_Backend_Binding* pBindings = NULL;
+	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding) * bindingCount, (void**)&pBindings);
+	
+	for(uint32_t i = 0; i < bindingCount; ++i)
+	{
+		struct TRM_Backend_Binding binding = {0};
+		binding.resource = TRM_Backend_translateResource(pass.info.dispatch.pBindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.dispatch.pBindings[i].mip;
+
+		// find merged resource state
+		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
+		{
+			struct TRM_Backend_ExpectedResourceState mergedResourceState;
+			TRM_DynamicArray_at(y, &backendPass.expectedResourceStates, &mergedResourceState);
+			if(mergedResourceState.resource == binding.resource)
+			{
+				binding.layout = mergedResourceState.state.layout;
+				break;
+			}
+		}
+		pBindings[i] = binding;
 	}
 
 	// update descriptor set
@@ -1847,17 +1946,11 @@ static struct TRM_Backend_Pass TRM_Backend_createDispatchPass(struct TRM_Pass pa
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.compute.descriptorInfoCount,
 		pPipeline->info.compute.pDescriptorInfos,
-		pass.info.dispatch.pBindings,
-		backendPass.pResourceStates,
+		pBindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-	
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
-	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
-	}
+
+	TRM_Memory_deallocate(pBindings);
 	
 	return backendPass;
 }
@@ -1865,148 +1958,106 @@ static struct TRM_Backend_Pass TRM_Backend_createDispatchPass(struct TRM_Pass pa
 static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-		
 	backendPass.type = TRM_PASS_TYPE_DRAW_VERTEX;
-	
-	const uint32_t vertexBufferStride = (uint32_t)pass.info.drawVertex.useVertexBuffer;
-			
-	backendPass.bindingCount = 
-		vertexBufferStride +							// vertex buffer (optional)
-		pass.info.drawVertex.colorOutputImageCount +	// x color attachments 
-		1 +												// 1 depth buffer
-		pass.info.drawVertex.bindingCount;			// x additional bindings
-			
-	const uint32_t vertexBufferOffset = 0;
-	const uint32_t colorAttachmentsOffset = vertexBufferOffset + vertexBufferStride;
-	const uint32_t depthAttachmentOffset = colorAttachmentsOffset + pass.info.drawVertex.colorOutputImageCount;
-	const uint32_t additionalBindingsOffset = depthAttachmentOffset + 1;
-
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	if(pass.info.drawVertex.useVertexBuffer)
-	{
-		backendPass.pBindings[vertexBufferOffset] =
-			TRM_Backend_translateResource(pass.info.drawVertex.vertexBuffer, swapchainImageIndex);
-	}
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawVertex.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex] =
-			TRM_Backend_translateResource(pass.info.drawVertex.pColorOutputImages[colorOutputImageIndex], swapchainImageIndex);
-	}
-
-	backendPass.pBindings[depthAttachmentOffset] =
-		TRM_Backend_translateResource(pass.info.drawVertex.depthOutputImage, swapchainImageIndex);
-
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawVertex.bindingCount; ++additionalBindingIndex)
-	{
-		backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex] =
-			TRM_Backend_translateResource(pass.info.drawVertex.pBindings[additionalBindingIndex], swapchainImageIndex);
-	}
-
 	backendPass.info.drawVertex.pipeline = pass.info.drawVertex.pipeline;
 	backendPass.info.drawVertex.width = pass.info.drawVertex.width;
 	backendPass.info.drawVertex.height = pass.info.drawVertex.height;
 	backendPass.info.drawVertex.useVertexBuffer = pass.info.drawVertex.useVertexBuffer;
 	backendPass.info.drawVertex.vertexCount = pass.info.drawVertex.vertexCount;
 	backendPass.info.drawVertex.clearColorCount = pass.info.drawVertex.colorOutputImageCount + 1;
-			
-	TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawVertex.colorOutputImageCount + 1), (void**)&backendPass.info.drawVertex.pClearColors);
-	for(uint32_t clearColorIndex = 0; clearColorIndex < pass.info.drawVertex.colorOutputImageCount; ++clearColorIndex)
-	{
-		backendPass.info.drawVertex.pClearColors[clearColorIndex].color.float32[0] =
-			pass.info.drawVertex.pClearColors[clearColorIndex].color[0];
-		backendPass.info.drawVertex.pClearColors[clearColorIndex].color.float32[1] = 
-			pass.info.drawVertex.pClearColors[clearColorIndex].color[1];
-		backendPass.info.drawVertex.pClearColors[clearColorIndex].color.float32[2] = 
-			pass.info.drawVertex.pClearColors[clearColorIndex].color[2];
-		backendPass.info.drawVertex.pClearColors[clearColorIndex].color.float32[3] = 
-			pass.info.drawVertex.pClearColors[clearColorIndex].color[3];
-	}
+	
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.depth = 1.0f;
-	backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.stencil = 0;
-
-	struct TRM_Backend_ResourceState* pResourceState = NULL;
-
-	if(pass.info.drawVertex.useVertexBuffer)
-	{
-		pResourceState = &backendPass.pResourceStates[backendPass.pBindings[vertexBufferOffset]];
-		pResourceState->access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-		pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-	}
-
-	VkImageLayout layout;
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawVertex.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		pResourceState = &backendPass.pResourceStates[backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex]];
-		pResourceState->access |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		pResourceState->stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-	}
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[depthAttachmentOffset]];
-	pResourceState->access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-	layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+	VkImageView* pAttachments = NULL;
+	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawVertex.colorOutputImageCount + 1), (void**)&pAttachments);
 
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawVertex.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawVertex.bindingCount; ++additionalBindingIndex)
+	// gather all expected resource states + bindings
+	for(uint32_t i = 0; i < pass.info.drawVertex.bindingCount; ++i)
 	{
-		uint32_t resource = backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex];
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawVertex.pBindings[i].resource, swapchainImageIndex);
+
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = resource;
+
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		pResourceState = &backendPass.pResourceStates[resource];
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
 
-		VkAccessFlags accessFlags =
-			(pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_READ) != 0 ?
-			VK_ACCESS_SHADER_READ_BIT :
-			0;
-		accessFlags |=
-			((pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_WRITE) != 0 ?
-				VK_ACCESS_SHADER_WRITE_BIT :
-				0);
-
-		pResourceState->access |= accessFlags;
-		layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
-			layout = pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].descriptorType == 
-				TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+			layout =
+				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 		}
-		pResourceState->stage |= (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		expectedResourceState.state.layout = layout;
+		expectedResourceState.state.access = accessFlags;
+		expectedResourceState.state.stage = (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
 	}
 
-	// framebuffer
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawVertex.colorOutputImageCount + 1), (void**)&pAttachments);
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawVertex.colorOutputImageCount; ++colorOutputImageIndex)
+	// vertex buffer
+	if(pass.info.drawVertex.useVertexBuffer)
 	{
-		struct TRM_Backend_Resource* pColorImage = NULL;
-		TRM_Arena_get(backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex], pState->resourcePool, (void**)&pColorImage);
-		pAttachments[colorOutputImageIndex] = pColorImage->info.image.imageView;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertex.vertexBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawVertex.vertexBuffer = expectedResourceState.resource;
 	}
 
-	struct TRM_Backend_Resource* pDepthImage = NULL;
-	TRM_Arena_get(backendPass.pBindings[depthAttachmentOffset], pState->resourcePool, (void**)&pDepthImage);
-	pAttachments[pass.info.drawVertex.colorOutputImageCount] = pDepthImage->info.image.imageView;
+	// color attachments
+	for(uint32_t i = 0; i < pass.info.drawVertex.colorOutputImageCount; ++i)
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertex.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
 
+		struct TRM_Backend_Resource* pColorImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
+		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+	}
+
+	// depth attachment
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertex.depthOutputImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+
+		struct TRM_Backend_Resource* pDepthImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
+		pAttachments[pass.info.drawVertex.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+	}
+
+	// clear colors
+	{
+		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawVertex.colorOutputImageCount + 1), (void**)&backendPass.info.drawVertex.pClearColors);
+		for(uint32_t i = 0; i < pass.info.drawVertex.colorOutputImageCount; ++i)
+		{
+			TRM_Memory_memcpy(
+				sizeof(float) * 4,
+				pass.info.drawIndexed.pClearColors[i].color,
+				backendPass.info.drawIndexed.pClearColors[i].color.float32);
+		}
+		backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.stencil = 0;
+	}
+	
+	// framebuffer
 	TRM_Backend_createFramebuffer(
 		pState->pAllocator,
 		pState->device,
@@ -2021,6 +2072,31 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 
 	backendPass.info.drawVertex.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
+
+	// bindings
+	uint32_t bindingCount = pass.info.drawVertex.bindingCount;
+	struct TRM_Backend_Binding* pBindings = NULL;
+	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+
+	for(uint32_t i = 0; i < bindingCount; ++i)
+	{
+		struct TRM_Backend_Binding binding = {0};
+		binding.resource = TRM_Backend_translateResource(pass.info.drawVertex.pBindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawVertex.pBindings[i].mip;
+
+		// find merged resource state
+		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
+		{
+			struct TRM_Backend_ExpectedResourceState mergedResourceState;
+			TRM_DynamicArray_at(y, &backendPass.expectedResourceStates, &mergedResourceState);
+			if(mergedResourceState.resource == binding.resource)
+			{
+				binding.layout = mergedResourceState.state.layout;
+				break;
+			}
+		}
+		pBindings[i] = binding;
+	}
 
 	// update descriptor set
 	VkDescriptorSet* pDescriptorSet =
@@ -2039,165 +2115,124 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount, 
 		pPipeline->info.graphics.pDescriptorInfos, 
-		pass.info.drawVertex.pBindings, 
-		backendPass.pResourceStates, 
+		pBindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-		
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
-	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
-	}
 	
 	return backendPass;
 }
 
 static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
-{		
+{
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-	
 	backendPass.type = TRM_PASS_TYPE_DRAW_INDEXED;
-	
-	backendPass.bindingCount =
-		1 +															// vertex buffer
-		1 +															// index buffer
-		pass.info.drawIndexed.colorOutputImageCount +		// x color attachments 
-		1 +															// 1 depth buffer
-		pass.info.drawIndexed.bindingCount;				// x additional bindings
-
-	const uint32_t vertexBufferOffset = 0;
-	const uint32_t indexBufferOffset = 1;
-	const uint32_t colorAttachmentsOffset = indexBufferOffset + 1;
-	const uint32_t depthAttachmentOffset = colorAttachmentsOffset + pass.info.drawIndexed.colorOutputImageCount;
-	const uint32_t additionalBindingsOffset = depthAttachmentOffset + 1;
-
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	backendPass.pBindings[vertexBufferOffset] =
-		TRM_Backend_translateResource(pass.info.drawIndexed.vertexBuffer, swapchainImageIndex);
-
-	backendPass.pBindings[indexBufferOffset] =
-		TRM_Backend_translateResource(pass.info.drawIndexed.indexBuffer, swapchainImageIndex);
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawIndexed.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex] =
-			TRM_Backend_translateResource(pass.info.drawIndexed.pColorOutputImages[colorOutputImageIndex], swapchainImageIndex);
-	}
-
-	backendPass.pBindings[depthAttachmentOffset] =
-		TRM_Backend_translateResource(pass.info.drawIndexed.depthOutputImage, swapchainImageIndex);
-
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawIndexed.bindingCount; ++additionalBindingIndex)
-	{
-		backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex] =
-			TRM_Backend_translateResource(pass.info.drawIndexed.pBindings[additionalBindingIndex], swapchainImageIndex);
-	}
-
 	backendPass.info.drawIndexed.pipeline = pass.info.drawIndexed.pipeline;
 	backendPass.info.drawIndexed.width = pass.info.drawIndexed.width;
 	backendPass.info.drawIndexed.height = pass.info.drawIndexed.height;
 	backendPass.info.drawIndexed.indexCount = pass.info.drawIndexed.indexCount;
 	backendPass.info.drawIndexed.clearColorCount = pass.info.drawIndexed.colorOutputImageCount + 1;
 
-	TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawIndexed.colorOutputImageCount + 1), (void**)&backendPass.info.drawIndexed.pClearColors);
-	for(uint32_t clearColorIndex = 0; clearColorIndex < pass.info.drawIndexed.colorOutputImageCount; ++clearColorIndex)
-	{
-		backendPass.info.drawIndexed.pClearColors[clearColorIndex].color.float32[0] = 
-			pass.info.drawIndexed.pClearColors[clearColorIndex].color[0];
-		backendPass.info.drawIndexed.pClearColors[clearColorIndex].color.float32[1] = 
-			pass.info.drawIndexed.pClearColors[clearColorIndex].color[1];
-		backendPass.info.drawIndexed.pClearColors[clearColorIndex].color.float32[2] = 
-			pass.info.drawIndexed.pClearColors[clearColorIndex].color[2];
-		backendPass.info.drawIndexed.pClearColors[clearColorIndex].color.float32[3] = 
-			pass.info.drawIndexed.pClearColors[clearColorIndex].color[3];
-	}
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	backendPass.info.drawIndexed.pClearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.depth = 1.0f;
-	backendPass.info.drawIndexed.pClearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.stencil = 0;
-
-	struct TRM_Backend_ResourceState* pResourceState = NULL;
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[vertexBufferOffset]];
-	pResourceState->access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[indexBufferOffset]];
-	pResourceState->access |= VK_ACCESS_INDEX_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-
-	VkImageLayout layout;
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawIndexed.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		pResourceState = &backendPass.pResourceStates[backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex]];
-		pResourceState->access |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		pResourceState->stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-	}
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[depthAttachmentOffset]];
-	pResourceState->access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-	layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+	VkImageView* pAttachments = NULL;
+	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawIndexed.colorOutputImageCount + 1), (void**)&pAttachments);
 
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawIndexed.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawIndexed.bindingCount; ++additionalBindingIndex)
+	// bindings
+	for(uint32_t i = 0; i < pass.info.drawIndexed.bindingCount; ++i)
 	{
-		uint32_t resource = backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex];
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawIndexed.pBindings[i].resource, swapchainImageIndex);
+
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = resource;
+
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		pResourceState = &backendPass.pResourceStates[resource];
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
 
-		VkAccessFlags accessFlags =
-			(pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_READ) != 0 ?
-			VK_ACCESS_SHADER_READ_BIT :
-			0;
-		accessFlags |=
-			((pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_WRITE) != 0 ?
-				VK_ACCESS_SHADER_WRITE_BIT :
-				0);
-
-		pResourceState->access |= accessFlags;
-		layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
-			layout = pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+			layout =
+				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 		}
-		pResourceState->stage |= (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		expectedResourceState.state.layout = layout;
+		expectedResourceState.state.access = accessFlags;
+		expectedResourceState.state.stage = (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
 	}
 
-	// framebuffer creation - feels out of place
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawIndexed.colorOutputImageCount + 1), (void**)&pAttachments);
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawIndexed.colorOutputImageCount; ++colorOutputImageIndex)
+	// vertex buffer
 	{
-		struct TRM_Backend_Resource* pColorImage = NULL;
-		TRM_Arena_get(backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex], pState->resourcePool, (void**)&pColorImage);
-		pAttachments[colorOutputImageIndex] = pColorImage->info.image.imageView;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexed.vertexBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawIndexed.vertexBuffer = expectedResourceState.resource;
 	}
 
-	struct TRM_Backend_Resource* pDepthImage = NULL;
-	TRM_Arena_get(backendPass.pBindings[depthAttachmentOffset], pState->resourcePool, (void**)&pDepthImage);
-	pAttachments[pass.info.drawIndexed.colorOutputImageCount] = pDepthImage->info.image.imageView;
+	// index buffer
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexed.indexBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_INDEX_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawIndexed.indexBuffer = expectedResourceState.resource;
+	}
 
+	// color attachments
+	for(uint32_t i = 0; i < pass.info.drawIndexed.colorOutputImageCount; ++i)
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexed.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+
+		struct TRM_Backend_Resource* pColorImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
+		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+	}
+
+	// depth attachment
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexed.depthOutputImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+
+		struct TRM_Backend_Resource* pDepthImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
+		pAttachments[pass.info.drawIndexed.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+	}
+
+	// clear colors
+	{
+		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawIndexed.colorOutputImageCount + 1), (void**)&backendPass.info.drawIndexed.pClearColors);
+		for(uint32_t i = 0; i < pass.info.drawIndexed.colorOutputImageCount; ++i)
+		{
+			TRM_Memory_memcpy(
+				sizeof(float) * 4,
+				pass.info.drawIndexed.pClearColors[i].color,
+				backendPass.info.drawIndexed.pClearColors[i].color.float32);
+		}
+		backendPass.info.drawIndexed.pClearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawIndexed.pClearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.stencil = 0;
+	}
+
+	// framebuffer
 	TRM_Backend_createFramebuffer(
 		pState->pAllocator,
 		pState->device,
@@ -2212,6 +2247,31 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 
 	backendPass.info.drawIndexed.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
+
+	// bindings
+	uint32_t bindingCount = pass.info.drawIndexed.bindingCount;
+	struct TRM_Backend_Binding* pBindings = NULL;
+	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+
+	for(uint32_t i = 0; i < bindingCount; ++i)
+	{
+		struct TRM_Backend_Binding binding = {0};
+		binding.resource = TRM_Backend_translateResource(pass.info.drawIndexed.pBindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawIndexed.pBindings[i].mip;
+
+		// find merged resource state
+		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
+		{
+			struct TRM_Backend_ExpectedResourceState mergedResourceState;
+			TRM_DynamicArray_at(y, &backendPass.expectedResourceStates, &mergedResourceState);
+			if(mergedResourceState.resource == binding.resource)
+			{
+				binding.layout = mergedResourceState.state.layout;
+				break;
+			}
+		}
+		pBindings[i] = binding;
+	}
 
 	// update descriptor set
 	VkDescriptorSet* pDescriptorSet =
@@ -2230,75 +2290,17 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount,
 		pPipeline->info.graphics.pDescriptorInfos,
-		pass.info.drawIndexed.pBindings,
-		backendPass.pResourceStates,
+		pBindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-		
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
-	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
-	}
 
 	return backendPass;
 }
 
 static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
-{		
+{
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-	
 	backendPass.type = TRM_PASS_TYPE_DRAW_VERTEX_INDIRECT;
-	
-	const uint32_t vertexBufferStride = (uint32_t)pass.info.drawVertexIndirect.useVertexBuffer;
-
-	backendPass.bindingCount =
-		1 +																	// buffer
-		vertexBufferStride +												// vertex buffer (optional)
-		pass.info.drawVertexIndirect.colorOutputImageCount +		// x color attachments 
-		1 +																	// 1 depth buffer
-		pass.info.drawVertexIndirect.bindingCount;				// x additional bindings
-
-	const uint32_t bufferOffset = 0;
-	const uint32_t vertexBufferOffset = bufferOffset + 1;
-	const uint32_t colorAttachmentsOffset = vertexBufferOffset + vertexBufferStride;
-	const uint32_t depthAttachmentOffset = colorAttachmentsOffset + pass.info.drawVertexIndirect.colorOutputImageCount;
-	const uint32_t additionalBindingsOffset = depthAttachmentOffset + 1;
-
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	backendPass.pBindings[bufferOffset] =
-		TRM_Backend_translateResource(pass.info.drawVertexIndirect.buffer, swapchainImageIndex);
-
-	if(pass.info.drawVertexIndirect.useVertexBuffer)
-	{
-		backendPass.pBindings[vertexBufferOffset] =
-			TRM_Backend_translateResource(pass.info.drawVertexIndirect.vertexBuffer, swapchainImageIndex);
-	}
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawVertexIndirect.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex] =
-			TRM_Backend_translateResource(pass.info.drawVertexIndirect.pColorOutputImages[colorOutputImageIndex], swapchainImageIndex);
-	}
-
-	backendPass.pBindings[depthAttachmentOffset] =
-		TRM_Backend_translateResource(pass.info.drawVertexIndirect.depthOutputImage, swapchainImageIndex);
-
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawVertexIndirect.bindingCount; ++additionalBindingIndex)
-	{
-		backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex] =
-			TRM_Backend_translateResource(pass.info.drawVertexIndirect.pBindings[additionalBindingIndex], swapchainImageIndex);
-	}
-
 	backendPass.info.drawVertexIndirect.pipeline = pass.info.drawVertexIndirect.pipeline;
 	backendPass.info.drawVertexIndirect.width = pass.info.drawVertexIndirect.width;
 	backendPass.info.drawVertexIndirect.height = pass.info.drawVertexIndirect.height;
@@ -2306,98 +2308,108 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 	backendPass.info.drawVertexIndirect.drawCount = pass.info.drawVertexIndirect.drawCount;
 	backendPass.info.drawVertexIndirect.clearColorCount = pass.info.drawVertexIndirect.colorOutputImageCount + 1;
 
-	TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawVertexIndirect.colorOutputImageCount + 1), (void**)&backendPass.info.drawVertexIndirect.pClearColors);
-	for(uint32_t clearColorIndex = 0; clearColorIndex < pass.info.drawVertexIndirect.colorOutputImageCount; ++clearColorIndex)
-	{
-		backendPass.info.drawVertexIndirect.pClearColors[clearColorIndex].color.float32[0] = 
-			pass.info.drawVertexIndirect.pClearColors[clearColorIndex].color[0];
-		backendPass.info.drawVertexIndirect.pClearColors[clearColorIndex].color.float32[1] = 
-			pass.info.drawVertexIndirect.pClearColors[clearColorIndex].color[1];
-		backendPass.info.drawVertexIndirect.pClearColors[clearColorIndex].color.float32[2] = 
-			pass.info.drawVertexIndirect.pClearColors[clearColorIndex].color[2];
-		backendPass.info.drawVertexIndirect.pClearColors[clearColorIndex].color.float32[3] = 
-			pass.info.drawVertexIndirect.pClearColors[clearColorIndex].color[3];
-	}
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
-	backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.stencil = 0;
-
-	struct TRM_Backend_ResourceState* pResourceState = NULL;
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[bufferOffset]];
-	pResourceState->access |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-
-	if(pass.info.drawVertexIndirect.useVertexBuffer)
-	{
-		pResourceState = &backendPass.pResourceStates[backendPass.pBindings[vertexBufferOffset]];
-		pResourceState->access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-		pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-	}
-
-	VkImageLayout layout;
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawVertexIndirect.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		pResourceState = &backendPass.pResourceStates[backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex]];
-		pResourceState->access |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		pResourceState->stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-	}
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[depthAttachmentOffset]];
-	pResourceState->access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-	layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+	VkImageView* pAttachments = NULL;
+	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawVertexIndirect.colorOutputImageCount + 1), (void**)&pAttachments);
 
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawVertexIndirect.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawVertexIndirect.bindingCount; ++additionalBindingIndex)
+	// bindings
+	for(uint32_t i = 0; i < pass.info.drawVertexIndirect.bindingCount; ++i)
 	{
-		uint32_t resource = backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex];
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.pBindings[i].resource, swapchainImageIndex);
+
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = resource;
+
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		pResourceState = &backendPass.pResourceStates[resource];
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
 
-		VkAccessFlags accessFlags =
-			(pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_READ) != 0 ?
-			VK_ACCESS_SHADER_READ_BIT :
-			0;
-		accessFlags |=
-			((pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_WRITE) != 0 ?
-				VK_ACCESS_SHADER_WRITE_BIT :
-				0);
-
-		pResourceState->access |= accessFlags;
-		layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
-			layout = pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+			layout =
+				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 		}
-		pResourceState->stage |= (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		expectedResourceState.state.layout = layout;
+		expectedResourceState.state.access = accessFlags;
+		expectedResourceState.state.stage = (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
 	}
 
-	// framebuffer creation
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawVertexIndirect.colorOutputImageCount + 1), (void**)&pAttachments);
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawVertexIndirect.colorOutputImageCount; ++colorOutputImageIndex)
+	// indirect command buffer
 	{
-		struct TRM_Backend_Resource* pColorImage = NULL;
-		TRM_Arena_get(backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex], pState->resourcePool, (void**)&pColorImage);
-		pAttachments[colorOutputImageIndex] = pColorImage->info.image.imageView;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.buffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawVertexIndirect.indirectCommandBuffer = expectedResourceState.resource;
 	}
 
-	struct TRM_Backend_Resource* pDepthImage = NULL;
-	TRM_Arena_get(backendPass.pBindings[depthAttachmentOffset], pState->resourcePool, (void**)&pDepthImage);
-	pAttachments[pass.info.drawVertexIndirect.colorOutputImageCount] = pDepthImage->info.image.imageView;
+	// vertex buffer
+	if(pass.info.drawVertexIndirect.useVertexBuffer)
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.vertexBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawVertexIndirect.vertexBuffer = expectedResourceState.resource;
+	}
 
+	// color attachments
+	for(uint32_t i = 0; i < pass.info.drawVertexIndirect.colorOutputImageCount; ++i)
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+
+		struct TRM_Backend_Resource* pColorImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
+		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+	}
+
+	// depth attachment
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.depthOutputImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+
+		struct TRM_Backend_Resource* pDepthImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
+		pAttachments[pass.info.drawVertexIndirect.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+	}
+
+	// clear colors
+	{
+		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawVertexIndirect.colorOutputImageCount + 1), (void**)&backendPass.info.drawVertexIndirect.pClearColors);
+		for(uint32_t i = 0; i < pass.info.drawVertexIndirect.colorOutputImageCount; ++i)
+		{
+			TRM_Memory_memcpy(
+				sizeof(float) * 4,
+				pass.info.drawIndexed.pClearColors[i].color,
+				backendPass.info.drawIndexed.pClearColors[i].color.float32);
+		}
+		backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.stencil = 0;
+	}
+
+	// framebuffer
 	TRM_Backend_createFramebuffer(
 		pState->pAllocator,
 		pState->device,
@@ -2412,6 +2424,31 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 
 	backendPass.info.drawVertexIndirect.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
+
+	// bindings
+	uint32_t bindingCount = pass.info.drawVertexIndirect.bindingCount;
+	struct TRM_Backend_Binding* pBindings = NULL;
+	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+
+	for(uint32_t i = 0; i < bindingCount; ++i)
+	{
+		struct TRM_Backend_Binding binding = {0};
+		binding.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.pBindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawVertexIndirect.pBindings[i].mip;
+
+		// find merged resource state
+		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
+		{
+			struct TRM_Backend_ExpectedResourceState mergedResourceState;
+			TRM_DynamicArray_at(y, &backendPass.expectedResourceStates, &mergedResourceState);
+			if(mergedResourceState.resource == binding.resource)
+			{
+				binding.layout = mergedResourceState.state.layout;
+				break;
+			}
+		}
+		pBindings[i] = binding;
+	}
 
 	// update descriptor set
 	VkDescriptorSet* pDescriptorSet =
@@ -2430,174 +2467,134 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount,
 		pPipeline->info.graphics.pDescriptorInfos,
-		pass.info.drawVertexIndirect.pBindings,
-		backendPass.pResourceStates,
+		pBindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-		
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
-	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
-	}
-	
+
 	return backendPass;
 }
 
 static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-	
 	backendPass.type = TRM_PASS_TYPE_DRAW_INDEXED_INDIRECT;
-	
-	backendPass.bindingCount =
-		1 +															// 1 buffer
-		1 +															// 1 vertex buffer
-		1 +															// 1 index buffer
-		pass.info.drawIndexedIndirect.colorOutputImageCount +		// x color attachments 
-		1 +															// 1 depth buffer
-		pass.info.drawIndexedIndirect.bindingCount;				// x additional bindings
-
-	const uint32_t bufferOffset = 0;
-	const uint32_t vertexBufferOffset = bufferOffset + 1;
-	const uint32_t indexBufferOffset = vertexBufferOffset + 1;
-	const uint32_t colorAttachmentsOffset = indexBufferOffset + 1;
-	const uint32_t depthAttachmentOffset = colorAttachmentsOffset + pass.info.drawIndexedIndirect.colorOutputImageCount;
-	const uint32_t additionalBindingsOffset = depthAttachmentOffset + 1;
-
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	backendPass.pBindings[bufferOffset] =
-		TRM_Backend_translateResource(pass.info.drawIndexedIndirect.buffer, swapchainImageIndex);
-
-	backendPass.pBindings[vertexBufferOffset] =
-		TRM_Backend_translateResource(pass.info.drawIndexedIndirect.vertexBuffer, swapchainImageIndex);
-
-	backendPass.pBindings[indexBufferOffset] =
-		TRM_Backend_translateResource(pass.info.drawIndexedIndirect.indexBuffer, swapchainImageIndex);
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawIndexedIndirect.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex] =
-			TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pColorOutputImages[colorOutputImageIndex], swapchainImageIndex);
-	}
-
-	backendPass.pBindings[depthAttachmentOffset] =
-		TRM_Backend_translateResource(pass.info.drawIndexedIndirect.depthOutputImage, swapchainImageIndex);
-
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawIndexedIndirect.bindingCount; ++additionalBindingIndex)
-	{
-		backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex] =
-			TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pBindings[additionalBindingIndex], swapchainImageIndex);
-	}
-
 	backendPass.info.drawIndexedIndirect.pipeline = pass.info.drawIndexedIndirect.pipeline;
 	backendPass.info.drawIndexedIndirect.width = pass.info.drawIndexedIndirect.width;
 	backendPass.info.drawIndexedIndirect.height = pass.info.drawIndexedIndirect.height;
 	backendPass.info.drawIndexedIndirect.drawCount = pass.info.drawIndexedIndirect.drawCount;
 	backendPass.info.drawIndexedIndirect.clearColorCount = pass.info.drawIndexedIndirect.colorOutputImageCount + 1;
 
-	TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawIndexedIndirect.colorOutputImageCount + 1), (void**)&backendPass.info.drawIndexedIndirect.pClearColors);
-	for(uint32_t clearColorIndex = 0; clearColorIndex < pass.info.drawIndexedIndirect.colorOutputImageCount; ++clearColorIndex)
-	{
-		backendPass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color.float32[0] = 
-			pass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color[0];
-		backendPass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color.float32[1] = 
-			pass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color[1];
-		backendPass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color.float32[2] = 
-			pass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color[2];
-		backendPass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color.float32[3] = 
-			pass.info.drawIndexedIndirect.pClearColors[clearColorIndex].color[3];
-	}
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	backendPass.info.drawIndexedIndirect.pClearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
-	backendPass.info.drawIndexedIndirect.pClearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.stencil = 0;
-
-	struct TRM_Backend_ResourceState* pResourceState = NULL;
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[bufferOffset]];
-	pResourceState->access |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[vertexBufferOffset]];
-	pResourceState->access |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[indexBufferOffset]];
-	pResourceState->access |= VK_ACCESS_INDEX_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-
-	VkImageLayout layout;
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawIndexedIndirect.colorOutputImageCount; ++colorOutputImageIndex)
-	{
-		pResourceState = &backendPass.pResourceStates[backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex]];
-		pResourceState->access |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		pResourceState->stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-	}
-
-	pResourceState = &backendPass.pResourceStates[backendPass.pBindings[depthAttachmentOffset]];
-	pResourceState->access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-	layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
+	VkImageView* pAttachments = NULL;
+	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawIndexedIndirect.colorOutputImageCount + 1), (void**)&pAttachments);
 
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawIndexedIndirect.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
-	for(uint32_t additionalBindingIndex = 0; additionalBindingIndex < pass.info.drawIndexedIndirect.bindingCount; ++additionalBindingIndex)
+	// bindings
+	for(uint32_t i = 0; i < pass.info.drawIndexedIndirect.bindingCount; ++i)
 	{
-		uint32_t resource = backendPass.pBindings[additionalBindingsOffset + additionalBindingIndex];
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pBindings[i].resource, swapchainImageIndex);
+
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = resource;
+
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		pResourceState = &backendPass.pResourceStates[resource];
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
 
-		VkAccessFlags accessFlags =
-			(pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_READ) != 0 ?
-			VK_ACCESS_SHADER_READ_BIT :
-			0;
-		accessFlags |=
-			((pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].resourceAccessFlags & TRM_SHADER_ACCESS_FLAG_WRITE) != 0 ?
-				VK_ACCESS_SHADER_WRITE_BIT :
-				0);
-
-		pResourceState->access |= accessFlags;
-		layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
-			layout = pPipeline->info.graphics.pDescriptorInfos[additionalBindingIndex].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+			layout =
+				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 		}
-		pResourceState->stage |= (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		expectedResourceState.state.layout = layout;
+		expectedResourceState.state.access = accessFlags;
+		expectedResourceState.state.stage = (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
 	}
 
-	// framebuffer creation - feels out of place
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawIndexedIndirect.colorOutputImageCount + 1), (void**)&pAttachments);
-
-	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < pass.info.drawIndexedIndirect.colorOutputImageCount; ++colorOutputImageIndex)
+	// indirect command buffer
 	{
-		struct TRM_Backend_Resource* pColorImage = NULL;
-		TRM_Arena_get(backendPass.pBindings[colorAttachmentsOffset + colorOutputImageIndex], pState->resourcePool, (void**)&pColorImage);
-		pAttachments[colorOutputImageIndex] = pColorImage->info.image.imageView;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.buffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawIndexedIndirect.indirectCommandBuffer = expectedResourceState.resource;
 	}
 
-	struct TRM_Backend_Resource* pDepthImage = NULL;
-	TRM_Arena_get(backendPass.pBindings[depthAttachmentOffset], pState->resourcePool, (void**)&pDepthImage);
-	pAttachments[pass.info.drawIndexedIndirect.colorOutputImageCount] = pDepthImage->info.image.imageView;
+	// vertex buffer
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.vertexBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawIndexedIndirect.vertexBuffer = expectedResourceState.resource;
+	}
 
+	// index buffer
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.indexBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_INDEX_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.drawIndexedIndirect.indexBuffer = expectedResourceState.resource;
+	}
+
+	// color attachments
+	for(uint32_t i = 0; i < pass.info.drawIndexedIndirect.colorOutputImageCount; ++i)
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+
+		struct TRM_Backend_Resource* pColorImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
+		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+	}
+
+	// depth attachment
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.depthOutputImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+
+		struct TRM_Backend_Resource* pDepthImage = NULL;
+		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
+		pAttachments[pass.info.drawIndexedIndirect.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+	}
+
+	// clear colors
+	{
+		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawIndexedIndirect.colorOutputImageCount + 1), (void**)&backendPass.info.drawIndexedIndirect.pClearColors);
+		for(uint32_t i = 0; i < pass.info.drawIndexedIndirect.colorOutputImageCount; ++i)
+		{
+			TRM_Memory_memcpy(
+				sizeof(float) * 4,
+				pass.info.drawIndexedIndirect.pClearColors[i].color,
+				backendPass.info.drawIndexedIndirect.pClearColors[i].color.float32);
+		}
+		backendPass.info.drawIndexedIndirect.pClearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawIndexedIndirect.pClearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.stencil = 0;
+	}
+
+	// framebuffer
 	TRM_Backend_createFramebuffer(
 		pState->pAllocator,
 		pState->device,
@@ -2612,6 +2609,31 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 
 	backendPass.info.drawIndexedIndirect.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
+
+	// bindings
+	uint32_t bindingCount = pass.info.drawIndexedIndirect.bindingCount;
+	struct TRM_Backend_Binding* pBindings = NULL;
+	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+
+	for(uint32_t i = 0; i < bindingCount; ++i)
+	{
+		struct TRM_Backend_Binding binding = {0};
+		binding.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pBindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawIndexedIndirect.pBindings[i].mip;
+
+		// find merged resource state
+		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
+		{
+			struct TRM_Backend_ExpectedResourceState mergedResourceState;
+			TRM_DynamicArray_at(y, &backendPass.expectedResourceStates, &mergedResourceState);
+			if(mergedResourceState.resource == binding.resource)
+			{
+				binding.layout = mergedResourceState.state.layout;
+				break;
+			}
+		}
+		pBindings[i] = binding;
+	}
 
 	// update descriptor set
 	VkDescriptorSet* pDescriptorSet =
@@ -2630,66 +2652,42 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount,
 		pPipeline->info.graphics.pDescriptorInfos,
-		pass.info.drawIndexedIndirect.pBindings,
-		backendPass.pResourceStates,
+		pBindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-		
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
-	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
-	}
-	
+
 	return backendPass;
 }
 
 static struct TRM_Backend_Pass TRM_Backend_createImageToImageCopyPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-		
-	backendPass.type = TRM_PASS_TYPE_IMAGE_TO_IMAGE_COPY;
-	
-	backendPass.bindingCount = 2;
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	backendPass.pBindings[0] = 
-		TRM_Backend_translateResource(pass.info.imageToImageCopy.srcImage, swapchainImageIndex);
-	backendPass.pBindings[1] = 
-		TRM_Backend_translateResource(pass.info.imageToImageCopy.dstImage, swapchainImageIndex);
-
+	backendPass.type = TRM_PASS_TYPE_BUFFER_TO_IMAGE_COPY;
 	backendPass.info.imageToImageCopy.width = pass.info.imageToImageCopy.width;
 	backendPass.info.imageToImageCopy.height = pass.info.imageToImageCopy.height;
 
-	uint32_t srcImage = backendPass.pBindings[0];
-	uint32_t dstImage = backendPass.pBindings[1];
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	VkImageLayout layout;
-	struct TRM_Backend_ResourceState* pResourceState = &backendPass.pResourceStates[srcImage];
-	pResourceState->access |= VK_ACCESS_TRANSFER_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-	layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-
-	pResourceState = &backendPass.pResourceStates[dstImage];
-	pResourceState->access |= VK_ACCESS_TRANSFER_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-	layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-	
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
+	// src image
 	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.imageToImageCopy.srcImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.imageToImageCopy.srcImage = expectedResourceState.resource;
+	}
+
+	// dst image
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.imageToImageCopy.dstImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.imageToImageCopy.dstImage = expectedResourceState.resource;
 	}
 	
 	return backendPass;
@@ -2698,45 +2696,31 @@ static struct TRM_Backend_Pass TRM_Backend_createImageToImageCopyPass(struct TRM
 static struct TRM_Backend_Pass TRM_Backend_createBufferToImageCopyPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-		
 	backendPass.type = TRM_PASS_TYPE_BUFFER_TO_IMAGE_COPY;
-	
-	backendPass.bindingCount = 2;
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	backendPass.pBindings[0] = 
-		TRM_Backend_translateResource(pass.info.bufferToImageCopy.srcBuffer, swapchainImageIndex);
-	backendPass.pBindings[1] = 
-		TRM_Backend_translateResource(pass.info.bufferToImageCopy.dstImage, swapchainImageIndex);
-
 	backendPass.info.bufferToImageCopy.width = pass.info.bufferToImageCopy.width;
 	backendPass.info.bufferToImageCopy.height = pass.info.bufferToImageCopy.height;
 
-	uint32_t srcBuffer = backendPass.pBindings[0];
-	uint32_t dstImage = backendPass.pBindings[1];
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	struct TRM_Backend_ResourceState* pResourceState = &backendPass.pResourceStates[srcBuffer];
-	pResourceState->access |= VK_ACCESS_TRANSFER_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-
-	pResourceState = &backendPass.pResourceStates[dstImage];
-	pResourceState->access |= VK_ACCESS_TRANSFER_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-	VkImageLayout layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-	
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
+	// src buffer
 	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.bufferToImageCopy.srcBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.bufferToImageCopy.srcBuffer = expectedResourceState.resource;
+	}
+
+	// dst image
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.bufferToImageCopy.dstImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.bufferToImageCopy.dstImage = expectedResourceState.resource;
 	}
 	
 	return backendPass;
@@ -2745,42 +2729,28 @@ static struct TRM_Backend_Pass TRM_Backend_createBufferToImageCopyPass(struct TR
 static struct TRM_Backend_Pass TRM_Backend_createBufferToBufferCopyPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-		
 	backendPass.type = TRM_PASS_TYPE_BUFFER_TO_BUFFER_COPY;
 	
-	backendPass.bindingCount = 2;
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	backendPass.pBindings[0] = 
-		TRM_Backend_translateResource(pass.info.bufferToBufferCopy.srcBuffer, swapchainImageIndex);
-	backendPass.pBindings[1] = 
-		TRM_Backend_translateResource(pass.info.bufferToBufferCopy.dstBuffer, swapchainImageIndex);
-
-	backendPass.info.bufferToBufferCopy.sizeInBytes = pass.info.bufferToBufferCopy.sizeInBytes;
-
-	uint32_t srcBuffer = backendPass.pBindings[0];
-	uint32_t dstBuffer = backendPass.pBindings[1];
-
-	struct TRM_Backend_ResourceState* pResourceState = &backendPass.pResourceStates[srcBuffer];
-	pResourceState->access |= VK_ACCESS_TRANSFER_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-
-	pResourceState = &backendPass.pResourceStates[dstBuffer];
-	pResourceState->access |= VK_ACCESS_TRANSFER_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-	
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
+	// src buffer
 	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.bufferToBufferCopy.srcBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.bufferToBufferCopy.srcBuffer = expectedResourceState.resource;
+	}
+
+	// dst buffer
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.bufferToBufferCopy.dstBuffer, swapchainImageIndex);
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.bufferToBufferCopy.dstBuffer = expectedResourceState.resource;
 	}
 	
 	return backendPass;
@@ -2789,50 +2759,34 @@ static struct TRM_Backend_Pass TRM_Backend_createBufferToBufferCopyPass(struct T
 static struct TRM_Backend_Pass TRM_Backend_createBlitPass(struct TRM_Pass pass, uint32_t swapchainImageIndex)
 {		
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-		
 	backendPass.type = TRM_PASS_TYPE_BLIT;
-	
-	backendPass.bindingCount = 2;
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
-
-	backendPass.pBindings[0] =
-		TRM_Backend_translateResource(pass.info.blit.srcImage, swapchainImageIndex);
-	backendPass.pBindings[1] =
-		TRM_Backend_translateResource(pass.info.blit.dstImage, swapchainImageIndex);
-
 	backendPass.info.blit.srcWidth = pass.info.blit.srcWidth;
 	backendPass.info.blit.srcHeight = pass.info.blit.srcHeight;
 	backendPass.info.blit.dstWidth = pass.info.blit.dstWidth;
 	backendPass.info.blit.dstHeight = pass.info.blit.dstHeight;
-
-	uint32_t srcImage = backendPass.pBindings[0];
-	uint32_t dstImage = backendPass.pBindings[1];
-
-	VkImageLayout layout;
-	struct TRM_Backend_ResourceState* pResourceState = &backendPass.pResourceStates[srcImage];
-	pResourceState->access |= VK_ACCESS_TRANSFER_READ_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-	layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-
-	pResourceState = &backendPass.pResourceStates[dstImage];
-	pResourceState->access |= VK_ACCESS_TRANSFER_WRITE_BIT;
-	pResourceState->stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-	layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
 	
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
+
+	// src image
 	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.blit.srcImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_READ_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.blit.srcImage = expectedResourceState.resource;
+	}
+
+	// dst image
+	{
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.blit.dstImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		expectedResourceState.state.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
+		backendPass.info.blit.dstImage = expectedResourceState.resource;
 	}
 	
 	return backendPass;
@@ -2841,34 +2795,18 @@ static struct TRM_Backend_Pass TRM_Backend_createBlitPass(struct TRM_Pass pass, 
 static struct TRM_Backend_Pass TRM_Backend_createPresentPass(uint32_t swapchainImageIndex)
 {			
 	struct TRM_Backend_Pass backendPass = {0};
-	
-	TRM_Memory_allocate(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		(void**)&backendPass.pResourceStates);
-	TRM_Memory_memzero(
-		sizeof(struct TRM_Backend_ResourceState) * TRM_BACKEND_MAX_RESOURCE_COUNT,
-		backendPass.pResourceStates);
-		
 	backendPass.type = TRM_PASS_TYPE_PRESENT;
 	
-	backendPass.bindingCount = 1;
-	TRM_Memory_allocate(sizeof(uint32_t) * backendPass.bindingCount, (void**)&backendPass.pBindings);
+	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	backendPass.pBindings[0] = 
-		TRM_Backend_translateResource(pState->pSwapchainImageInfos[swapchainImageIndex].colorImage, swapchainImageIndex);
-
-	uint32_t colorImage = backendPass.pBindings[0];
-
-	struct TRM_Backend_ResourceState* pResourceState = &backendPass.pResourceStates[colorImage];
-	pResourceState->stage |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-	VkImageLayout layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-	TRM_Backend_mergeLayouts(layout, pResourceState->layout, &pResourceState->layout);
-	
-	for(uint32_t bindingIndex = 0; bindingIndex < backendPass.bindingCount; ++bindingIndex)
+	// present image
 	{
-		struct TRM_Backend_Resource* pResource = NULL;
-		TRM_Arena_get(backendPass.pBindings[bindingIndex], pState->resourcePool, (void**)&pResource);
-		pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
+		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
+		expectedResourceState.resource = TRM_Backend_translateResource(pState->pSwapchainImageInfos[swapchainImageIndex].colorImage, swapchainImageIndex);
+		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		expectedResourceState.state.access = 0;
+		expectedResourceState.state.stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		TRM_Backend_addExpectedResourceState(expectedResourceState, &backendPass.expectedResourceStates);
 	}
 	
 	return backendPass;
@@ -2916,6 +2854,8 @@ static void TRM_Backend_fillCommandBuffer(
 
 	for(uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
 	{
+		const struct TRM_Backend_Pass* pPass = &pPasses[passIndex];
+
 		VkPipelineStageFlags srcStageFlags = 0;
 		VkPipelineStageFlags dstStageFlags = 0;
 		struct TRM_DynamicArray bufferMemoryBarriers;
@@ -2924,18 +2864,20 @@ static void TRM_Backend_fillCommandBuffer(
 		TRM_DynamicArray_create(sizeof(VkBufferMemoryBarrier), &bufferMemoryBarriers);
 		TRM_DynamicArray_create(sizeof(VkImageMemoryBarrier), &imageMemoryBarriers);
 
-		const struct TRM_Backend_Pass* pPass = &pPasses[passIndex];
-
 		// retrieves all barriers (memory + execution) for this pass for each resource
 		bool needBarrier = false;
-		for(uint32_t bindingIndex = 0; bindingIndex < pPass->bindingCount; ++bindingIndex)
+		for(uint32_t i = 0; i < pPass->expectedResourceStates.elementCount; ++i)
 		{
-			const uint32_t resource = pPass->pBindings[bindingIndex];
+			struct TRM_Backend_ExpectedResourceState expectedResourceState;
+			TRM_DynamicArray_at(i, &pPass->expectedResourceStates, &expectedResourceState);
+
+			// update resource use
 			struct TRM_Backend_Resource* pResource = NULL;
-			TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
+			TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pResource);
+			pResource->lastFrameIndexNoWarp = pState->frameIndexWarp;
 
 			struct TRM_Backend_ResourceState* pPreviousResourceState = &pResource->state;
-			struct TRM_Backend_ResourceState* pCurrentResourceState = &pPass->pResourceStates[resource];
+			struct TRM_Backend_ResourceState* pCurrentResourceState = &expectedResourceState.state;
 
 			const uint32_t lastWasWrite = (pPreviousResourceState->access & (
 				VK_ACCESS_SHADER_WRITE_BIT |
@@ -2986,7 +2928,7 @@ static void TRM_Backend_fillCommandBuffer(
 					imageMemoryBarrier.subresourceRange.aspectMask = pResource->info.image.aspect;
 					imageMemoryBarrier.subresourceRange.layerCount = 1;
 					imageMemoryBarrier.subresourceRange.baseArrayLayer = 0;
-					imageMemoryBarrier.subresourceRange.levelCount = 1;
+					imageMemoryBarrier.subresourceRange.levelCount = pResource->info.image.mipCount; // all mips are transitionned
 					imageMemoryBarrier.subresourceRange.baseMipLevel = 0;
 
 					TRM_DynamicArray_push(&imageMemoryBarrier, &imageMemoryBarriers);
@@ -3117,7 +3059,7 @@ static void TRM_Backend_fillCommandBuffer(
 			if(pPass->info.drawVertex.useVertexBuffer)
 			{
 				struct TRM_Backend_Resource* pVertexBuffer = NULL;
-				TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pVertexBuffer);
+				TRM_Arena_get(pPass->info.drawVertex.vertexBuffer, pState->resourcePool, (void**)&pVertexBuffer);
 				VkDeviceSize offset = 0;
 				VkBuffer vertexBuffer = pVertexBuffer->info.buffer.buffer;
 				vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &offset);
@@ -3176,10 +3118,10 @@ static void TRM_Backend_fillCommandBuffer(
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
 			struct TRM_Backend_Resource* pVertexBuffer = NULL;
-			TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pVertexBuffer);
+			TRM_Arena_get(pPass->info.drawIndexed.vertexBuffer, pState->resourcePool, (void**)&pVertexBuffer);
 
 			struct TRM_Backend_Resource* pIndexBuffer = NULL;
-			TRM_Arena_get(pPass->pBindings[1], pState->resourcePool, (void**)&pIndexBuffer);
+			TRM_Arena_get(pPass->info.drawIndexed.indexBuffer, pState->resourcePool, (void**)&pIndexBuffer);
 
 			VkDeviceSize offset = 0;
 			VkBuffer vertexBuffer = pVertexBuffer->info.buffer.buffer;
@@ -3240,12 +3182,12 @@ static void TRM_Backend_fillCommandBuffer(
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
 			struct TRM_Backend_Resource* pBuffer = NULL;
-			TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pBuffer);
+			TRM_Arena_get(pPass->info.drawVertexIndirect.indirectCommandBuffer, pState->resourcePool, (void**)&pBuffer);
 
 			if(pPass->info.drawVertexIndirect.useVertexBuffer)
 			{
 				struct TRM_Backend_Resource* pVertexBuffer = NULL;
-				TRM_Arena_get(pPass->pBindings[1], pState->resourcePool, (void**)&pVertexBuffer);
+				TRM_Arena_get(pPass->info.drawVertexIndirect.vertexBuffer, pState->resourcePool, (void**)&pVertexBuffer);
 				VkDeviceSize offset = 0;
 				VkBuffer vertexBuffer = pVertexBuffer->info.buffer.buffer;
 				vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &offset);
@@ -3305,13 +3247,13 @@ static void TRM_Backend_fillCommandBuffer(
 			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
 			struct TRM_Backend_Resource* pBuffer = NULL;
-			TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pBuffer);
+			TRM_Arena_get(pPass->info.drawIndexedIndirect.indirectCommandBuffer, pState->resourcePool, (void**)&pBuffer);
 
 			struct TRM_Backend_Resource* pVertexBuffer = NULL;
-			TRM_Arena_get(pPass->pBindings[1], pState->resourcePool, (void**)&pVertexBuffer);
+			TRM_Arena_get(pPass->info.drawIndexedIndirect.vertexBuffer, pState->resourcePool, (void**)&pVertexBuffer);
 
 			struct TRM_Backend_Resource* pIndexBuffer = NULL;
-			TRM_Arena_get(pPass->pBindings[2], pState->resourcePool, (void**)&pIndexBuffer);
+			TRM_Arena_get(pPass->info.drawIndexedIndirect.indexBuffer, pState->resourcePool, (void**)&pIndexBuffer);
 
 			VkDeviceSize offset = 0;
 			VkBuffer vertexBuffer = pVertexBuffer->info.buffer.buffer;
@@ -3327,10 +3269,10 @@ static void TRM_Backend_fillCommandBuffer(
 		case TRM_PASS_TYPE_IMAGE_TO_IMAGE_COPY:
 		{
 			struct TRM_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pInputResource);
+			TRM_Arena_get(pPass->info.imageToImageCopy.srcImage, pState->resourcePool, (void**)&pInputResource);
 
 			struct TRM_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
+			TRM_Arena_get(pPass->info.imageToImageCopy.dstImage, pState->resourcePool, (void**)&pOutputResource);
 
 			VkImageCopy imageCopy = {0};
 			imageCopy.srcSubresource.aspectMask = pInputResource->info.image.aspect;
@@ -3364,10 +3306,10 @@ static void TRM_Backend_fillCommandBuffer(
 		case TRM_PASS_TYPE_BUFFER_TO_IMAGE_COPY:
 		{
 			struct TRM_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pInputResource);
+			TRM_Arena_get(pPass->info.bufferToImageCopy.srcBuffer, pState->resourcePool, (void**)&pInputResource);
 
 			struct TRM_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
+			TRM_Arena_get(pPass->info.bufferToImageCopy.dstImage, pState->resourcePool, (void**)&pOutputResource);
 
 			VkBufferImageCopy bufferImageCopy = {0};
 			bufferImageCopy.bufferOffset = 0;
@@ -3396,10 +3338,10 @@ static void TRM_Backend_fillCommandBuffer(
 		case TRM_PASS_TYPE_BUFFER_TO_BUFFER_COPY:
 		{
 			struct TRM_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pInputResource);
+			TRM_Arena_get(pPass->info.bufferToBufferCopy.srcBuffer, pState->resourcePool, (void**)&pInputResource);
 
 			struct TRM_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
+			TRM_Arena_get(pPass->info.bufferToBufferCopy.dstBuffer, pState->resourcePool, (void**)&pOutputResource);
 
 			VkBufferCopy bufferCopy = {0};
 			bufferCopy.srcOffset = 0;
@@ -3417,10 +3359,10 @@ static void TRM_Backend_fillCommandBuffer(
 		case TRM_PASS_TYPE_BLIT:
 		{
 			struct TRM_Backend_Resource* pInputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[0], pState->resourcePool, (void**)&pInputResource);
+			TRM_Arena_get(pPass->info.blit.srcImage, pState->resourcePool, (void**)&pInputResource);
 
 			struct TRM_Backend_Resource* pOutputResource = NULL;
-			TRM_Arena_get(pPass->pBindings[1], pState->resourcePool, (void**)&pOutputResource);
+			TRM_Arena_get(pPass->info.blit.dstImage, pState->resourcePool, (void**)&pOutputResource);
 
 			VkImageBlit blit = {0};
 			blit.srcSubresource.aspectMask = pInputResource->info.image.aspect;
@@ -3558,7 +3500,7 @@ void TRM_terminate(void)
 				struct TRM_Backend_Resource* pSwapchainColorImage;
 				TRM_Arena_get(pState->pSwapchainImageInfos[swapchainImageIndex].colorImage, pState->resourcePool, (void**)&pSwapchainColorImage);
 
-				vkDestroyImageView(pState->device, pSwapchainColorImage->info.image.imageView, pState->pAllocator);
+				vkDestroyImageView(pState->device, pSwapchainColorImage->info.image.allMipsImageView, pState->pAllocator);
 				vkFreeMemory(pState->device, pSwapchainColorImage->info.image.memory, pState->pAllocator);
 				vkDestroySemaphore(pState->device, pState->pSwapchainImageInfos[swapchainImageIndex].imageRenderedSemaphore, pState->pAllocator);
 			}
@@ -3663,8 +3605,7 @@ void TRM_endFrame(uint32_t passCount, struct TRM_Pass* pPasss, uint32_t windowWi
 
 	for(uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
 	{
-		TRM_Memory_deallocate(pBackendPasses[passIndex].pBindings);
-		TRM_Memory_deallocate(pBackendPasses[passIndex].pResourceStates);
+		TRM_DynamicArray_destroy(&pBackendPasses[passIndex].expectedResourceStates);
 
 		if(pBackendPasses[passIndex].type == TRM_PASS_TYPE_DRAW_VERTEX)
 		{
