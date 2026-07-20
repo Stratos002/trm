@@ -2026,7 +2026,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2040,7 +2040,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawVertex.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+		pAttachments[pass.info.drawVertex.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
@@ -2203,7 +2203,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2217,7 +2217,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawIndexed.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+		pAttachments[pass.info.drawIndexed.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
@@ -2382,7 +2382,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2396,7 +2396,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawVertexIndirect.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+		pAttachments[pass.info.drawVertexIndirect.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
@@ -2569,7 +2569,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.allMipsImageView;
+		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2583,7 +2583,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawIndexedIndirect.colorOutputImageCount] = pDepthImage->info.image.allMipsImageView;
+		pAttachments[pass.info.drawIndexedIndirect.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
