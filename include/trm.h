@@ -10,8 +10,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define TRM_SWAPCHAIN_IMAGE UINT32_MAX
+#define TRM_NULL_HANDLE UINT32_MAX
+#define TRM_SWAPCHAIN_IMAGE (UINT32_MAX - 1)
 #define TRM_SWAPCHAIN_IMAGE_FORMAT UINT32_MAX
+#define TRM_MAX_DESCRIPTOR_COUNT 16
+#define TRM_MAX_COLOR_OUTPUT_COUNT 16
+#define TRM_MAX_VERTEX_ATTRIBUTE_COUNT 16
 
 enum TRM_ResourceType
 {
@@ -128,6 +132,12 @@ enum TRM_Format
 	TRM_FORMAT_R32G32B32A32_SFLOAT
 };
 
+enum TRM_OutputLoadOp
+{
+	TRM_OUTPUT_LOAD_OP_LOAD,
+	TRM_OUTPUT_LOAD_OP_CLEAR
+};
+
 enum TRM_ImageUsage
 {
 	TRM_IMAGE_USAGE_COLOR_ATTACHMENT = (1 << 0),
@@ -184,6 +194,12 @@ struct TRM_DescriptorInfo
 	uint32_t resourceAccessFlags;
 };
 
+struct TRM_OutputInfo
+{
+	enum TRM_Format format;
+	enum TRM_OutputLoadOp loadOp;
+};
+
 struct TRM_VertexAttributeDescription
 {
 	uint32_t shaderLocation;
@@ -198,13 +214,13 @@ struct TRM_GraphicsPipelineCreateInfo
 	uint32_t fragmentCodeSize;
 	const void* pFragmentCode;
 	uint32_t colorOutputImageCount;
-	enum TRM_Format* pColorOutputImageFormats;
-	enum TRM_Format depthOutputFormat;
+	struct TRM_OutputInfo colorOutputImageInfos[TRM_MAX_COLOR_OUTPUT_COUNT];
+	struct TRM_OutputInfo depthOutputInfo;
 	uint32_t vertexStride;
 	uint32_t vertexAttributeDescriptionCount;
-	const struct TRM_VertexAttributeDescription* pVertexAttributeDescriptions;
+	struct TRM_VertexAttributeDescription vertexAttributeDescriptions[TRM_MAX_VERTEX_ATTRIBUTE_COUNT];
 	uint32_t descriptorInfoCount;
-	const struct TRM_DescriptorInfo* pDescriptorInfos;
+	struct TRM_DescriptorInfo descriptorInfos[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_ComputePipelineCreateInfo
@@ -212,7 +228,7 @@ struct TRM_ComputePipelineCreateInfo
 	uint32_t codeSize;
 	const uint32_t* pCode;
 	uint32_t descriptorInfoCount;
-	const struct TRM_DescriptorInfo* pDescriptorInfos;
+	struct TRM_DescriptorInfo descriptorInfos[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_Binding
@@ -242,7 +258,7 @@ struct TRM_DispatchPassInfo
 	uint32_t groupCountY;
 	uint32_t groupCountZ;
 	uint32_t bindingCount;
-	const struct TRM_Binding* pBindings;
+	struct TRM_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_ClearColor
@@ -259,11 +275,11 @@ struct TRM_DrawVertexPassInfo
 	bool useVertexBuffer;
 	uint32_t vertexBuffer;
 	uint32_t colorOutputImageCount;
-	uint32_t* pColorOutputImages;
-	const struct TRM_ClearColor* pClearColors;
+	uint32_t colorOutputImages[TRM_MAX_COLOR_OUTPUT_COUNT];
+	struct TRM_ClearColor clearColors[TRM_MAX_COLOR_OUTPUT_COUNT];
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const struct TRM_Binding* pBindings;
+	struct TRM_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_DrawIndexedPassInfo
@@ -275,11 +291,11 @@ struct TRM_DrawIndexedPassInfo
 	uint32_t indexBuffer;
 	uint32_t vertexBuffer;
 	uint32_t colorOutputImageCount;
-	uint32_t* pColorOutputImages;
-	const struct TRM_ClearColor* pClearColors;
+	uint32_t colorOutputImages[TRM_MAX_COLOR_OUTPUT_COUNT];
+	struct TRM_ClearColor clearColors[TRM_MAX_COLOR_OUTPUT_COUNT];
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const struct TRM_Binding* pBindings;
+	struct TRM_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_DrawVertexIndirectPassInfo
@@ -292,11 +308,11 @@ struct TRM_DrawVertexIndirectPassInfo
 	bool useVertexBuffer;
 	uint32_t vertexBuffer;
 	uint32_t colorOutputImageCount;
-	uint32_t* pColorOutputImages;
-	const struct TRM_ClearColor* pClearColors;
+	uint32_t colorOutputImages[TRM_MAX_COLOR_OUTPUT_COUNT];
+	struct TRM_ClearColor clearColors[TRM_MAX_COLOR_OUTPUT_COUNT];
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const struct TRM_Binding* pBindings;
+	struct TRM_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_DrawIndexedIndirectPassInfo
@@ -309,11 +325,11 @@ struct TRM_DrawIndexedIndirectPassInfo
 	uint32_t indexBuffer;
 	uint32_t vertexBuffer;
 	uint32_t colorOutputImageCount;
-	uint32_t* pColorOutputImages;
-	const struct TRM_ClearColor* pClearColors;
+	uint32_t colorOutputImages[TRM_MAX_COLOR_OUTPUT_COUNT];
+	struct TRM_ClearColor clearColors[TRM_MAX_COLOR_OUTPUT_COUNT];
 	uint32_t depthOutputImage;
 	uint32_t bindingCount;
-	const struct TRM_Binding* pBindings;
+	struct TRM_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_CopyImageToImagePassInfo

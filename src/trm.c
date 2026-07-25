@@ -12,7 +12,7 @@
 
 // having 1 more frame in flight could hide lag spikes from the GPU, but I don't think it's worth the memory cost
 #define TRM_BACKEND_FRAME_COUNT 2 
-#define TRM_BACKEND_MAX_RESOURCE_COUNT 64
+#define TRM_BACKEND_MAX_RESOURCE_COUNT 1024
 #define TRM_BACKEND_MAX_PIPELINE_COUNT 64
 #define TRM_MAX_DESCRIPTOR_SET_PER_FRAME_COUNT 32
 #define TRM_MAX_FRAMEBUFFER_PER_FRAME_COUNT 8
@@ -97,7 +97,7 @@ struct TRM_Backend_ComputePipeline
 	VkPipelineLayout pipelineLayout;
 	VkPipeline pipeline;
 	uint32_t descriptorInfoCount;
-	struct TRM_DescriptorInfo* pDescriptorInfos;
+	struct TRM_DescriptorInfo descriptorInfos[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_Backend_GraphicsPipeline
@@ -107,7 +107,7 @@ struct TRM_Backend_GraphicsPipeline
 	VkPipeline pipeline;
 	VkRenderPass renderPass;
 	uint32_t descriptorInfoCount;
-	struct TRM_DescriptorInfo* pDescriptorInfos;
+	struct TRM_DescriptorInfo descriptorInfos[TRM_MAX_DESCRIPTOR_COUNT];
 };
 
 struct TRM_Backend_Pipeline
@@ -139,7 +139,7 @@ struct TRM_Backend_drawVertexPassInfo
 	uint32_t descriptorSet;
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
-	VkClearValue* pClearColors;
+	VkClearValue clearColors[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
 	uint32_t vertexBuffer;
 };
 
@@ -152,7 +152,7 @@ struct TRM_Backend_drawIndexedPassInfo
 	uint32_t descriptorSet;
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
-	VkClearValue* pClearColors;
+	VkClearValue clearColors[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
 	uint32_t vertexBuffer;
 	uint32_t indexBuffer;
 };
@@ -167,7 +167,7 @@ struct TRM_Backend_drawVertexIndirectPassInfo
 	uint32_t descriptorSet;
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
-	VkClearValue* pClearColors;
+	VkClearValue clearColors[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
 	uint32_t vertexBuffer;
 	uint32_t indirectCommandBuffer;
 };
@@ -181,7 +181,7 @@ struct TRM_Backend_drawIndexedIndirectPassInfo
 	uint32_t descriptorSet;
 	uint32_t framebuffer;
 	uint32_t clearColorCount;
-	VkClearValue* pClearColors;
+	VkClearValue clearColors[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
 	uint32_t vertexBuffer;
 	uint32_t indexBuffer;
 	uint32_t indirectCommandBuffer;
@@ -258,7 +258,7 @@ struct TRM_Backend_FrameInfo
 	VkSemaphore imageAvailableSemaphore;
 	VkSemaphore timelineSemaphore;
 	uint32_t descriptorSetCount;
-	VkDescriptorSet descriptorSets[TRM_MAX_DESCRIPTOR_SET_PER_FRAME_COUNT]; // descriptor sets are created/destroyed each frame (BAD)
+	VkDescriptorSet descriptorSets[TRM_MAX_DESCRIPTOR_SET_PER_FRAME_COUNT];
 	uint32_t framebufferCount;
 	VkFramebuffer framebuffers[TRM_MAX_FRAMEBUFFER_PER_FRAME_COUNT];
 };
@@ -909,19 +909,19 @@ static void TRM_Backend_allocateCommandBuffer(VkCommandPool commandPool, VkDevic
 static void TRM_Backend_createDescriptorPool(const VkAllocationCallbacks* pAllocator, VkDevice device, VkDescriptorPool* pDescriptorPool)
 {
 	VkDescriptorPoolSize uniformBufferDescriptorPoolSize = {0};
-	uniformBufferDescriptorPoolSize.descriptorCount = 10;
+	uniformBufferDescriptorPoolSize.descriptorCount = 128;
 	uniformBufferDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
 	VkDescriptorPoolSize storageBufferDescriptorPoolSize = {0};
-	storageBufferDescriptorPoolSize.descriptorCount = 10;
+	storageBufferDescriptorPoolSize.descriptorCount = 128;
 	storageBufferDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 	VkDescriptorPoolSize storageImageDescriptorPoolSize = {0};
-	storageImageDescriptorPoolSize.descriptorCount = 10;
+	storageImageDescriptorPoolSize.descriptorCount = 128;
 	storageImageDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
 	VkDescriptorPoolSize combinedImageSamplerDescriptorPoolSize = {0};
-	combinedImageSamplerDescriptorPoolSize.descriptorCount = 10;
+	combinedImageSamplerDescriptorPoolSize.descriptorCount = 128;
 	combinedImageSamplerDescriptorPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
 	VkDescriptorPoolSize descriptorPoolSizes[] = {
@@ -935,7 +935,7 @@ static void TRM_Backend_createDescriptorPool(const VkAllocationCallbacks* pAlloc
 	descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	descriptorPoolCreateInfo.pNext = NULL;
 	descriptorPoolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	descriptorPoolCreateInfo.maxSets = 10;
+	descriptorPoolCreateInfo.maxSets = 64;
 	descriptorPoolCreateInfo.poolSizeCount = sizeof(descriptorPoolSizes) / sizeof(descriptorPoolSizes[0]);
 	descriptorPoolCreateInfo.pPoolSizes = descriptorPoolSizes;
 
@@ -1203,19 +1203,18 @@ static void TRM_Backend_createGraphicsPipeline(
 	depthStencilStateCreateInfo.minDepthBounds = 0.0f;
 	depthStencilStateCreateInfo.maxDepthBounds = 1.0f;
 
-	VkPipelineColorBlendAttachmentState* pColorBlendAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkPipelineColorBlendAttachmentState) * colorAttachmentCount, (void**)&pColorBlendAttachments);
+	VkPipelineColorBlendAttachmentState colorBlendAttachments[TRM_MAX_COLOR_OUTPUT_COUNT];
 
 	for(uint32_t colorBlendAttachmentIndex = 0; colorBlendAttachmentIndex < colorAttachmentCount; ++colorBlendAttachmentIndex)
 	{
-		pColorBlendAttachments[colorBlendAttachmentIndex].blendEnable = VK_FALSE;
-		pColorBlendAttachments[colorBlendAttachmentIndex].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-		pColorBlendAttachments[colorBlendAttachmentIndex].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-		pColorBlendAttachments[colorBlendAttachmentIndex].colorBlendOp = VK_BLEND_OP_ADD;
-		pColorBlendAttachments[colorBlendAttachmentIndex].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-		pColorBlendAttachments[colorBlendAttachmentIndex].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-		pColorBlendAttachments[colorBlendAttachmentIndex].alphaBlendOp = VK_BLEND_OP_ADD;
-		pColorBlendAttachments[colorBlendAttachmentIndex].colorWriteMask =
+		colorBlendAttachments[colorBlendAttachmentIndex].blendEnable = VK_FALSE;
+		colorBlendAttachments[colorBlendAttachmentIndex].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		colorBlendAttachments[colorBlendAttachmentIndex].dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+		colorBlendAttachments[colorBlendAttachmentIndex].colorBlendOp = VK_BLEND_OP_ADD;
+		colorBlendAttachments[colorBlendAttachmentIndex].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		colorBlendAttachments[colorBlendAttachmentIndex].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+		colorBlendAttachments[colorBlendAttachmentIndex].alphaBlendOp = VK_BLEND_OP_ADD;
+		colorBlendAttachments[colorBlendAttachmentIndex].colorWriteMask =
 			VK_COLOR_COMPONENT_R_BIT |
 			VK_COLOR_COMPONENT_G_BIT |
 			VK_COLOR_COMPONENT_B_BIT |
@@ -1229,7 +1228,7 @@ static void TRM_Backend_createGraphicsPipeline(
 	colorBlendStateInfo.logicOpEnable = VK_FALSE;
 	colorBlendStateInfo.logicOp = VK_LOGIC_OP_COPY;
 	colorBlendStateInfo.attachmentCount = colorAttachmentCount;
-	colorBlendStateInfo.pAttachments = pColorBlendAttachments;
+	colorBlendStateInfo.pAttachments = colorBlendAttachments;
 	colorBlendStateInfo.blendConstants[0] = 0.0f;
 	colorBlendStateInfo.blendConstants[1] = 0.0f;
 	colorBlendStateInfo.blendConstants[2] = 0.0f;
@@ -1260,8 +1259,6 @@ static void TRM_Backend_createGraphicsPipeline(
 	{
 		exit(EXIT_FAILURE);
 	}
-
-	TRM_Memory_deallocate(pColorBlendAttachments);
 }
 
 static uint32_t TRM_Backend_translateResource(uint32_t handle, uint32_t swapchainImageIndex)
@@ -1418,6 +1415,17 @@ static VkFormat TRM_Backend_convertFormat(enum TRM_Format format)
 	default: exit(EXIT_FAILURE);
 	}
 }
+
+static VkAttachmentLoadOp TRM_Backend_convertLoadOp(enum TRM_OutputLoadOp loadOp)
+{
+	switch(loadOp)
+	{
+	case(TRM_OUTPUT_LOAD_OP_LOAD): return VK_ATTACHMENT_LOAD_OP_LOAD; break;
+	case(TRM_OUTPUT_LOAD_OP_CLEAR): return VK_ATTACHMENT_LOAD_OP_CLEAR; break;
+	default: exit(EXIT_FAILURE);
+	}
+}
+
 
 static VkDescriptorType TRM_Backend_convertDescriptorType(enum TRM_DescriptorType descriptorType)
 {
@@ -1775,12 +1783,9 @@ static void TRM_Backend_updateDescriptorSet(
 	VkDescriptorSet descriptorSet,
 	uint32_t swapchainImageIndex)
 {
-	VkWriteDescriptorSet* pWrites = NULL;
-	VkDescriptorBufferInfo* pBufferInfos = NULL;
-	VkDescriptorImageInfo* pImageInfos = NULL;
-	TRM_Memory_allocate(sizeof(VkWriteDescriptorSet) * descriptorCount, (void**)&pWrites);
-	TRM_Memory_allocate(sizeof(VkDescriptorBufferInfo) * descriptorCount, (void**)&pBufferInfos);
-	TRM_Memory_allocate(sizeof(VkDescriptorImageInfo) * descriptorCount, (void**)&pImageInfos);
+	VkWriteDescriptorSet writes[TRM_MAX_DESCRIPTOR_COUNT];
+	VkDescriptorBufferInfo bufferInfos[TRM_MAX_DESCRIPTOR_COUNT];
+	VkDescriptorImageInfo imageInfos[TRM_MAX_DESCRIPTOR_COUNT];
 
 	for(uint32_t i = 0; i < descriptorCount; ++i)
 	{
@@ -1789,56 +1794,52 @@ static void TRM_Backend_updateDescriptorSet(
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		pWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		pWrites[i].pNext = NULL;
-		pWrites[i].dstBinding = i;
-		pWrites[i].dstArrayElement = 0;
-		pWrites[i].descriptorCount = 1;
-		pWrites[i].descriptorType = descriptorType;
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].pNext = NULL;
+		writes[i].dstBinding = i;
+		writes[i].dstArrayElement = 0;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = descriptorType;
 
 		if(descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 		{
-			pBufferInfos[i].buffer = pResource->info.buffer.buffer;
-			pBufferInfos[i].offset = 0;
-			pBufferInfos[i].range = VK_WHOLE_SIZE;
+			bufferInfos[i].buffer = pResource->info.buffer.buffer;
+			bufferInfos[i].offset = 0;
+			bufferInfos[i].range = VK_WHOLE_SIZE;
 
-			pWrites[i].pBufferInfo = &pBufferInfos[i];
-			pWrites[i].pImageInfo = NULL;
-			pWrites[i].pTexelBufferView = NULL;
+			writes[i].pBufferInfo = &bufferInfos[i];
+			writes[i].pImageInfo = NULL;
+			writes[i].pTexelBufferView = NULL;
 
 		}
 		else if(descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 		{
-			pImageInfos[i].imageLayout = pBindings[i].layout;
-			pImageInfos[i].imageView = pResource->info.image.singleMipImageViews[pBindings[i].mip];
-			pImageInfos[i].sampler = VK_NULL_HANDLE;
+			imageInfos[i].imageLayout = pBindings[i].layout;
+			imageInfos[i].imageView = pResource->info.image.singleMipImageViews[pBindings[i].mip];
+			imageInfos[i].sampler = VK_NULL_HANDLE;
 
-			pWrites[i].pBufferInfo = NULL;
-			pWrites[i].pImageInfo = &pImageInfos[i];
+			writes[i].pBufferInfo = NULL;
+			writes[i].pImageInfo = &imageInfos[i];
 		}
 		else if(descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 		{
-			pImageInfos[i].imageLayout = pBindings[i].layout;
-			pImageInfos[i].imageView = pResource->info.image.allMipsImageView;
-			pImageInfos[i].sampler = pState->globalSampler;
+			imageInfos[i].imageLayout = pBindings[i].layout;
+			imageInfos[i].imageView = pResource->info.image.allMipsImageView;
+			imageInfos[i].sampler = pState->globalSampler;
 
-			pWrites[i].pBufferInfo = NULL;
-			pWrites[i].pImageInfo = &pImageInfos[i];
+			writes[i].pBufferInfo = NULL;
+			writes[i].pImageInfo = &imageInfos[i];
 		}
 		else
 		{
 			exit(EXIT_FAILURE);
 		}
 
-		pWrites[i].dstSet = descriptorSet;
-		pWrites[i].pTexelBufferView = NULL;
+		writes[i].dstSet = descriptorSet;
+		writes[i].pTexelBufferView = NULL;
 	}
 
-	vkUpdateDescriptorSets(pState->device, descriptorCount, pWrites, 0, NULL);
-
-	TRM_Memory_deallocate(pBufferInfos);
-	TRM_Memory_deallocate(pImageInfos);
-	TRM_Memory_deallocate(pWrites);
+	vkUpdateDescriptorSets(pState->device, descriptorCount, writes, 0, NULL);
 }
 
 static void TRM_Backend_addExpectedResourceState(struct TRM_Backend_ExpectedResourceState expectedResourceState, struct TRM_DynamicArray* pExpectedResourceStates)
@@ -1876,20 +1877,20 @@ static struct TRM_Backend_Pass TRM_Backend_createDispatchPass(struct TRM_Pass pa
 	for(uint32_t i = 0; i < pass.info.dispatch.bindingCount; ++i)
 	{
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
-		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.dispatch.pBindings[i].resource, swapchainImageIndex);
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.dispatch.bindings[i].resource, swapchainImageIndex);
 		
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pResource);
 		struct TRM_Backend_Pipeline* pPipeline = NULL;
 		TRM_Arena_get(backendPass.info.dispatch.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
-		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.compute.pDescriptorInfos[i].resourceAccessFlags);
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.compute.descriptorInfos[i].resourceAccessFlags);
 
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
 			layout =
-				pPipeline->info.compute.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+				pPipeline->info.compute.descriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
@@ -1903,14 +1904,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDispatchPass(struct TRM_Pass pa
 
 	// bindings
 	uint32_t bindingCount = pass.info.dispatch.bindingCount;
-	struct TRM_Backend_Binding* pBindings = NULL;
-	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding) * bindingCount, (void**)&pBindings);
+	struct TRM_Backend_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 	
 	for(uint32_t i = 0; i < bindingCount; ++i)
 	{
 		struct TRM_Backend_Binding binding = {0};
-		binding.resource = TRM_Backend_translateResource(pass.info.dispatch.pBindings[i].resource, swapchainImageIndex);
-		binding.mip = pass.info.dispatch.pBindings[i].mip;
+		binding.resource = TRM_Backend_translateResource(pass.info.dispatch.bindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.dispatch.bindings[i].mip;
 
 		// find merged resource state
 		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
@@ -1923,7 +1923,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDispatchPass(struct TRM_Pass pa
 				break;
 			}
 		}
-		pBindings[i] = binding;
+		bindings[i] = binding;
 	}
 
 	// update descriptor set
@@ -1945,12 +1945,10 @@ static struct TRM_Backend_Pass TRM_Backend_createDispatchPass(struct TRM_Pass pa
 
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.compute.descriptorInfoCount,
-		pPipeline->info.compute.pDescriptorInfos,
-		pBindings,
+		pPipeline->info.compute.descriptorInfos,
+		bindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-
-	TRM_Memory_deallocate(pBindings);
 	
 	return backendPass;
 }
@@ -1968,8 +1966,6 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 	
 	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawVertex.colorOutputImageCount + 1), (void**)&pAttachments);
 
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawVertex.pipeline, pState->pipelinePool, (void**)&pPipeline);
@@ -1977,7 +1973,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 	// gather all expected resource states + bindings
 	for(uint32_t i = 0; i < pass.info.drawVertex.bindingCount; ++i)
 	{
-		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawVertex.pBindings[i].resource, swapchainImageIndex);
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawVertex.bindings[i].resource, swapchainImageIndex);
 
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
 		expectedResourceState.resource = resource;
@@ -1985,13 +1981,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.descriptorInfos[i].resourceAccessFlags);
 
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
 			layout =
-				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+				pPipeline->info.graphics.descriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
@@ -2014,11 +2010,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 		backendPass.info.drawVertex.vertexBuffer = expectedResourceState.resource;
 	}
 
+	VkImageView attachments[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
+	
 	// color attachments
 	for(uint32_t i = 0; i < pass.info.drawVertex.colorOutputImageCount; ++i)
 	{
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
-		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertex.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertex.colorOutputImages[i], swapchainImageIndex);
 		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2026,7 +2024,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
+		attachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2040,21 +2038,20 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawVertex.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
+		attachments[pass.info.drawVertex.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
 	{
-		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawVertex.colorOutputImageCount + 1), (void**)&backendPass.info.drawVertex.pClearColors);
 		for(uint32_t i = 0; i < pass.info.drawVertex.colorOutputImageCount; ++i)
 		{
 			TRM_Memory_memcpy(
 				sizeof(float) * 4,
-				pass.info.drawVertex.pClearColors[i].color,
-				backendPass.info.drawVertex.pClearColors[i].color.float32);
+				pass.info.drawVertex.clearColors[i].color,
+				backendPass.info.drawVertex.clearColors[i].color.float32);
 		}
-		backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.depth = 1.0f;
-		backendPass.info.drawVertex.pClearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.stencil = 0;
+		backendPass.info.drawVertex.clearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawVertex.clearColors[pass.info.drawVertex.colorOutputImageCount].depthStencil.stencil = 0;
 	}
 	
 	// framebuffer
@@ -2063,26 +2060,24 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 		pState->device,
 		pPipeline->info.graphics.renderPass,
 		pass.info.drawVertex.colorOutputImageCount + 1,
-		pAttachments,
+		attachments,
 		backendPass.info.drawVertex.width,
 		backendPass.info.drawVertex.height,
 		&pState->pFrameInfos[pState->frameIndexWarp].framebuffers[pState->pFrameInfos[pState->frameIndexWarp].framebufferCount]);
 
-	TRM_Memory_deallocate(pAttachments);
 
 	backendPass.info.drawVertex.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
 
 	// bindings
 	uint32_t bindingCount = pass.info.drawVertex.bindingCount;
-	struct TRM_Backend_Binding* pBindings = NULL;
-	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+	struct TRM_Backend_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 
 	for(uint32_t i = 0; i < bindingCount; ++i)
 	{
 		struct TRM_Backend_Binding binding = {0};
-		binding.resource = TRM_Backend_translateResource(pass.info.drawVertex.pBindings[i].resource, swapchainImageIndex);
-		binding.mip = pass.info.drawVertex.pBindings[i].mip;
+		binding.resource = TRM_Backend_translateResource(pass.info.drawVertex.bindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawVertex.bindings[i].mip;
 
 		// find merged resource state
 		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
@@ -2095,7 +2090,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 				break;
 			}
 		}
-		pBindings[i] = binding;
+		bindings[i] = binding;
 	}
 
 	// update descriptor set
@@ -2114,12 +2109,10 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexPass(struct TRM_Pass 
 
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount, 
-		pPipeline->info.graphics.pDescriptorInfos, 
-		pBindings,
+		pPipeline->info.graphics.descriptorInfos, 
+		bindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-
-	TRM_Memory_deallocate(pBindings);
 	
 	return backendPass;
 }
@@ -2136,16 +2129,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 
 	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawIndexed.colorOutputImageCount + 1), (void**)&pAttachments);
-
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawIndexed.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
 	// bindings
 	for(uint32_t i = 0; i < pass.info.drawIndexed.bindingCount; ++i)
 	{
-		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawIndexed.pBindings[i].resource, swapchainImageIndex);
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawIndexed.bindings[i].resource, swapchainImageIndex);
 
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
 		expectedResourceState.resource = resource;
@@ -2153,13 +2143,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.descriptorInfos[i].resourceAccessFlags);
 
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
 			layout =
-				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+				pPipeline->info.graphics.descriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
@@ -2191,11 +2181,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 		backendPass.info.drawIndexed.indexBuffer = expectedResourceState.resource;
 	}
 
+	VkImageView attachments[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
+	
 	// color attachments
 	for(uint32_t i = 0; i < pass.info.drawIndexed.colorOutputImageCount; ++i)
 	{
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
-		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexed.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexed.colorOutputImages[i], swapchainImageIndex);
 		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2203,7 +2195,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
+		attachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2217,21 +2209,20 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawIndexed.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
+		attachments[pass.info.drawIndexed.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
 	{
-		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawIndexed.colorOutputImageCount + 1), (void**)&backendPass.info.drawIndexed.pClearColors);
 		for(uint32_t i = 0; i < pass.info.drawIndexed.colorOutputImageCount; ++i)
 		{
 			TRM_Memory_memcpy(
 				sizeof(float) * 4,
-				pass.info.drawIndexed.pClearColors[i].color,
-				backendPass.info.drawIndexed.pClearColors[i].color.float32);
+				pass.info.drawIndexed.clearColors[i].color,
+				backendPass.info.drawIndexed.clearColors[i].color.float32);
 		}
-		backendPass.info.drawIndexed.pClearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.depth = 1.0f;
-		backendPass.info.drawIndexed.pClearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.stencil = 0;
+		backendPass.info.drawIndexed.clearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawIndexed.clearColors[pass.info.drawIndexed.colorOutputImageCount].depthStencil.stencil = 0;
 	}
 
 	// framebuffer
@@ -2240,26 +2231,23 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 		pState->device,
 		pPipeline->info.graphics.renderPass,
 		pass.info.drawIndexed.colorOutputImageCount + 1,
-		pAttachments,
+		attachments,
 		backendPass.info.drawIndexed.width,
 		backendPass.info.drawIndexed.height,
 		&pState->pFrameInfos[pState->frameIndexWarp].framebuffers[pState->pFrameInfos[pState->frameIndexWarp].framebufferCount]);
-
-	TRM_Memory_deallocate(pAttachments);
 
 	backendPass.info.drawIndexed.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
 
 	// bindings
 	uint32_t bindingCount = pass.info.drawIndexed.bindingCount;
-	struct TRM_Backend_Binding* pBindings = NULL;
-	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+	struct TRM_Backend_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 
 	for(uint32_t i = 0; i < bindingCount; ++i)
 	{
 		struct TRM_Backend_Binding binding = {0};
-		binding.resource = TRM_Backend_translateResource(pass.info.drawIndexed.pBindings[i].resource, swapchainImageIndex);
-		binding.mip = pass.info.drawIndexed.pBindings[i].mip;
+		binding.resource = TRM_Backend_translateResource(pass.info.drawIndexed.bindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawIndexed.bindings[i].mip;
 
 		// find merged resource state
 		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
@@ -2272,7 +2260,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 				break;
 			}
 		}
-		pBindings[i] = binding;
+		bindings[i] = binding;
 	}
 
 	// update descriptor set
@@ -2291,12 +2279,10 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedPass(struct TRM_Pass
 
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount,
-		pPipeline->info.graphics.pDescriptorInfos,
-		pBindings,
+		pPipeline->info.graphics.descriptorInfos,
+		bindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-
-	TRM_Memory_deallocate(pBindings);
 
 	return backendPass;
 }
@@ -2314,8 +2300,6 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 
 	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawVertexIndirect.colorOutputImageCount + 1), (void**)&pAttachments);
 
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawVertexIndirect.pipeline, pState->pipelinePool, (void**)&pPipeline);
@@ -2323,7 +2307,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 	// bindings
 	for(uint32_t i = 0; i < pass.info.drawVertexIndirect.bindingCount; ++i)
 	{
-		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.pBindings[i].resource, swapchainImageIndex);
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.bindings[i].resource, swapchainImageIndex);
 
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
 		expectedResourceState.resource = resource;
@@ -2331,13 +2315,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.descriptorInfos[i].resourceAccessFlags);
 
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
 			layout =
-				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+				pPipeline->info.graphics.descriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
@@ -2370,11 +2354,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 		backendPass.info.drawVertexIndirect.vertexBuffer = expectedResourceState.resource;
 	}
 
+	VkImageView attachments[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
+	
 	// color attachments
 	for(uint32_t i = 0; i < pass.info.drawVertexIndirect.colorOutputImageCount; ++i)
 	{
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
-		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.colorOutputImages[i], swapchainImageIndex);
 		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2382,7 +2368,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
+		attachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2396,21 +2382,20 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawVertexIndirect.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
+		attachments[pass.info.drawVertexIndirect.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
 	{
-		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawVertexIndirect.colorOutputImageCount + 1), (void**)&backendPass.info.drawVertexIndirect.pClearColors);
 		for(uint32_t i = 0; i < pass.info.drawVertexIndirect.colorOutputImageCount; ++i)
 		{
 			TRM_Memory_memcpy(
 				sizeof(float) * 4,
-				pass.info.drawVertexIndirect.pClearColors[i].color,
-				backendPass.info.drawVertexIndirect.pClearColors[i].color.float32);
+				pass.info.drawVertexIndirect.clearColors[i].color,
+				backendPass.info.drawVertexIndirect.clearColors[i].color.float32);
 		}
-		backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
-		backendPass.info.drawVertexIndirect.pClearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.stencil = 0;
+		backendPass.info.drawVertexIndirect.clearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawVertexIndirect.clearColors[pass.info.drawVertexIndirect.colorOutputImageCount].depthStencil.stencil = 0;
 	}
 
 	// framebuffer
@@ -2419,26 +2404,23 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 		pState->device,
 		pPipeline->info.graphics.renderPass,
 		pass.info.drawVertexIndirect.colorOutputImageCount + 1,
-		pAttachments,
+		attachments,
 		backendPass.info.drawVertexIndirect.width,
 		backendPass.info.drawVertexIndirect.height,
 		&pState->pFrameInfos[pState->frameIndexWarp].framebuffers[pState->pFrameInfos[pState->frameIndexWarp].framebufferCount]);
-
-	TRM_Memory_deallocate(pAttachments);
 
 	backendPass.info.drawVertexIndirect.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
 
 	// bindings
 	uint32_t bindingCount = pass.info.drawVertexIndirect.bindingCount;
-	struct TRM_Backend_Binding* pBindings = NULL;
-	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+	struct TRM_Backend_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 
 	for(uint32_t i = 0; i < bindingCount; ++i)
 	{
 		struct TRM_Backend_Binding binding = {0};
-		binding.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.pBindings[i].resource, swapchainImageIndex);
-		binding.mip = pass.info.drawVertexIndirect.pBindings[i].mip;
+		binding.resource = TRM_Backend_translateResource(pass.info.drawVertexIndirect.bindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawVertexIndirect.bindings[i].mip;
 
 		// find merged resource state
 		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
@@ -2451,7 +2433,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 				break;
 			}
 		}
-		pBindings[i] = binding;
+		bindings[i] = binding;
 	}
 
 	// update descriptor set
@@ -2470,12 +2452,10 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawVertexIndirectPass(struct T
 
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount,
-		pPipeline->info.graphics.pDescriptorInfos,
-		pBindings,
+		pPipeline->info.graphics.descriptorInfos,
+		bindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-
-	TRM_Memory_deallocate(pBindings);
 
 	return backendPass;
 }
@@ -2492,16 +2472,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 
 	TRM_DynamicArray_create(sizeof(struct TRM_Backend_ExpectedResourceState), &backendPass.expectedResourceStates);
 
-	VkImageView* pAttachments = NULL;
-	TRM_Memory_allocate(sizeof(VkImageView) * (pass.info.drawIndexedIndirect.colorOutputImageCount + 1), (void**)&pAttachments);
-
 	struct TRM_Backend_Pipeline* pPipeline = NULL;
 	TRM_Arena_get(backendPass.info.drawIndexedIndirect.pipeline, pState->pipelinePool, (void**)&pPipeline);
 
 	// bindings
 	for(uint32_t i = 0; i < pass.info.drawIndexedIndirect.bindingCount; ++i)
 	{
-		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pBindings[i].resource, swapchainImageIndex);
+		const uint32_t resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.bindings[i].resource, swapchainImageIndex);
 
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
 		expectedResourceState.resource = resource;
@@ -2509,13 +2486,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 		struct TRM_Backend_Resource* pResource = NULL;
 		TRM_Arena_get(resource, pState->resourcePool, (void**)&pResource);
 
-		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.pDescriptorInfos[i].resourceAccessFlags);
+		VkAccessFlags accessFlags = TRM_Backend_convertAccessFlags(pPipeline->info.graphics.descriptorInfos[i].resourceAccessFlags);
 
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		if(pResource->type == TRM_BACKEND_RESOURCE_TYPE_IMAGE)
 		{
 			layout =
-				pPipeline->info.graphics.pDescriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
+				pPipeline->info.graphics.descriptorInfos[i].descriptorType == TRM_DESCRIPTOR_TYPE_STORAGE_IMAGE ?
 				VK_IMAGE_LAYOUT_GENERAL :
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		}
@@ -2557,11 +2534,13 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 		backendPass.info.drawIndexedIndirect.indexBuffer = expectedResourceState.resource;
 	}
 
+	VkImageView attachments[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
+	
 	// color attachments
 	for(uint32_t i = 0; i < pass.info.drawIndexedIndirect.colorOutputImageCount; ++i)
 	{
 		struct TRM_Backend_ExpectedResourceState expectedResourceState = {0};
-		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pColorOutputImages[i], swapchainImageIndex);
+		expectedResourceState.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.colorOutputImages[i], swapchainImageIndex);
 		expectedResourceState.state.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		expectedResourceState.state.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		expectedResourceState.state.stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2569,7 +2548,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 
 		struct TRM_Backend_Resource* pColorImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pColorImage);
-		pAttachments[i] = pColorImage->info.image.singleMipImageViews[0];
+		attachments[i] = pColorImage->info.image.singleMipImageViews[0];
 	}
 
 	// depth attachment
@@ -2583,21 +2562,20 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 
 		struct TRM_Backend_Resource* pDepthImage = NULL;
 		TRM_Arena_get(expectedResourceState.resource, pState->resourcePool, (void**)&pDepthImage);
-		pAttachments[pass.info.drawIndexedIndirect.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
+		attachments[pass.info.drawIndexedIndirect.colorOutputImageCount] = pDepthImage->info.image.singleMipImageViews[0];
 	}
 
 	// clear colors
 	{
-		TRM_Memory_allocate(sizeof(VkClearColorValue) * (pass.info.drawIndexedIndirect.colorOutputImageCount + 1), (void**)&backendPass.info.drawIndexedIndirect.pClearColors);
 		for(uint32_t i = 0; i < pass.info.drawIndexedIndirect.colorOutputImageCount; ++i)
 		{
 			TRM_Memory_memcpy(
 				sizeof(float) * 4,
-				pass.info.drawIndexedIndirect.pClearColors[i].color,
-				backendPass.info.drawIndexedIndirect.pClearColors[i].color.float32);
+				pass.info.drawIndexedIndirect.clearColors[i].color,
+				backendPass.info.drawIndexedIndirect.clearColors[i].color.float32);
 		}
-		backendPass.info.drawIndexedIndirect.pClearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
-		backendPass.info.drawIndexedIndirect.pClearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.stencil = 0;
+		backendPass.info.drawIndexedIndirect.clearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.depth = 1.0f;
+		backendPass.info.drawIndexedIndirect.clearColors[pass.info.drawIndexedIndirect.colorOutputImageCount].depthStencil.stencil = 0;
 	}
 
 	// framebuffer
@@ -2606,26 +2584,23 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 		pState->device,
 		pPipeline->info.graphics.renderPass,
 		pass.info.drawIndexedIndirect.colorOutputImageCount + 1,
-		pAttachments,
+		attachments,
 		backendPass.info.drawIndexedIndirect.width,
 		backendPass.info.drawIndexedIndirect.height,
 		&pState->pFrameInfos[pState->frameIndexWarp].framebuffers[pState->pFrameInfos[pState->frameIndexWarp].framebufferCount]);
-
-	TRM_Memory_deallocate(pAttachments);
 
 	backendPass.info.drawIndexedIndirect.framebuffer = pState->pFrameInfos[pState->frameIndexWarp].framebufferCount;
 	pState->pFrameInfos[pState->frameIndexWarp].framebufferCount += 1;
 
 	// bindings
 	uint32_t bindingCount = pass.info.drawIndexedIndirect.bindingCount;
-	struct TRM_Backend_Binding* pBindings = NULL;
-	TRM_Memory_allocate(sizeof(struct TRM_Backend_Binding)* bindingCount, (void**)&pBindings);
+	struct TRM_Backend_Binding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 
 	for(uint32_t i = 0; i < bindingCount; ++i)
 	{
 		struct TRM_Backend_Binding binding = {0};
-		binding.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.pBindings[i].resource, swapchainImageIndex);
-		binding.mip = pass.info.drawIndexedIndirect.pBindings[i].mip;
+		binding.resource = TRM_Backend_translateResource(pass.info.drawIndexedIndirect.bindings[i].resource, swapchainImageIndex);
+		binding.mip = pass.info.drawIndexedIndirect.bindings[i].mip;
 
 		// find merged resource state
 		for(uint32_t y = 0; y < backendPass.expectedResourceStates.elementCount; ++y)
@@ -2638,7 +2613,7 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 				break;
 			}
 		}
-		pBindings[i] = binding;
+		bindings[i] = binding;
 	}
 
 	// update descriptor set
@@ -2657,12 +2632,10 @@ static struct TRM_Backend_Pass TRM_Backend_createDrawIndexedIndirectPass(struct 
 
 	TRM_Backend_updateDescriptorSet(
 		pPipeline->info.graphics.descriptorInfoCount,
-		pPipeline->info.graphics.pDescriptorInfos,
-		pBindings,
+		pPipeline->info.graphics.descriptorInfos,
+		bindings,
 		*pDescriptorSet,
 		swapchainImageIndex);
-
-	TRM_Memory_deallocate(pBindings);
 
 	return backendPass;
 }
@@ -3032,7 +3005,7 @@ static void TRM_Backend_fillCommandBuffer(
 			renderPassBeginInfo.renderArea.extent.width = pPass->info.drawVertex.width;
 			renderPassBeginInfo.renderArea.extent.height = pPass->info.drawVertex.height;
 			renderPassBeginInfo.clearValueCount = pPass->info.drawVertex.clearColorCount;
-			renderPassBeginInfo.pClearValues = pPass->info.drawVertex.pClearColors;
+			renderPassBeginInfo.pClearValues = pPass->info.drawVertex.clearColors;
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -3093,7 +3066,7 @@ static void TRM_Backend_fillCommandBuffer(
 			renderPassBeginInfo.renderArea.extent.width = pPass->info.drawIndexed.width;
 			renderPassBeginInfo.renderArea.extent.height = pPass->info.drawIndexed.height;
 			renderPassBeginInfo.clearValueCount = pPass->info.drawIndexed.clearColorCount;
-			renderPassBeginInfo.pClearValues = pPass->info.drawIndexed.pClearColors;
+			renderPassBeginInfo.pClearValues = pPass->info.drawIndexed.clearColors;
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -3157,7 +3130,7 @@ static void TRM_Backend_fillCommandBuffer(
 			renderPassBeginInfo.renderArea.extent.width = pPass->info.drawVertexIndirect.width;
 			renderPassBeginInfo.renderArea.extent.height = pPass->info.drawVertexIndirect.height;
 			renderPassBeginInfo.clearValueCount = pPass->info.drawVertexIndirect.clearColorCount;
-			renderPassBeginInfo.pClearValues = pPass->info.drawVertexIndirect.pClearColors;
+			renderPassBeginInfo.pClearValues = pPass->info.drawVertexIndirect.clearColors;
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -3222,7 +3195,7 @@ static void TRM_Backend_fillCommandBuffer(
 			renderPassBeginInfo.renderArea.extent.width = pPass->info.drawIndexed.width;
 			renderPassBeginInfo.renderArea.extent.height = pPass->info.drawIndexed.height;
 			renderPassBeginInfo.clearValueCount = pPass->info.drawIndexed.clearColorCount;
-			renderPassBeginInfo.pClearValues = pPass->info.drawIndexed.pClearColors;
+			renderPassBeginInfo.pClearValues = pPass->info.drawIndexed.clearColors;
 
 			vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -3615,23 +3588,6 @@ void TRM_endFrame(uint32_t passCount, struct TRM_Pass* pPasss, uint32_t windowWi
 	for(uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
 	{
 		TRM_DynamicArray_destroy(&pBackendPasses[passIndex].expectedResourceStates);
-
-		if(pBackendPasses[passIndex].type == TRM_PASS_TYPE_DRAW_VERTEX)
-		{
-			TRM_Memory_deallocate(pBackendPasses[passIndex].info.drawVertex.pClearColors);
-		}
-		else if(pBackendPasses[passIndex].type == TRM_PASS_TYPE_DRAW_INDEXED)
-		{
-			TRM_Memory_deallocate(pBackendPasses[passIndex].info.drawIndexed.pClearColors);
-		}
-		else if(pBackendPasses[passIndex].type == TRM_PASS_TYPE_DRAW_VERTEX_INDIRECT)
-		{
-			TRM_Memory_deallocate(pBackendPasses[passIndex].info.drawVertexIndirect.pClearColors);
-		}
-		else if(pBackendPasses[passIndex].type == TRM_PASS_TYPE_DRAW_INDEXED_INDIRECT)
-		{
-			TRM_Memory_deallocate(pBackendPasses[passIndex].info.drawIndexedIndirect.pClearColors);
-		}
 	}
 	TRM_Memory_deallocate(pBackendPasses);
 
@@ -3732,33 +3688,30 @@ void TRM_createComputePipeline(struct TRM_ComputePipelineCreateInfo info, uint32
 	
 	pipeline.type = TRM_PIPELINE_TYPE_COMPUTE;
 	pipeline.info.compute.descriptorInfoCount = info.descriptorInfoCount;
-	TRM_Memory_allocate(sizeof(struct TRM_DescriptorInfo) * info.descriptorInfoCount, (void**)&pipeline.info.compute.pDescriptorInfos);
 	TRM_Memory_memcpy(
 		sizeof(struct TRM_DescriptorInfo) * info.descriptorInfoCount, 
-		info.pDescriptorInfos, 
-		pipeline.info.compute.pDescriptorInfos);
+		info.descriptorInfos, 
+		pipeline.info.compute.descriptorInfos);
 
-	VkDescriptorSetLayoutBinding* pBindings = NULL;
-	TRM_Memory_allocate(sizeof(VkDescriptorSetLayoutBinding) * info.descriptorInfoCount, (void**)&pBindings);
+	VkDescriptorSetLayoutBinding bindings[TRM_MAX_DESCRIPTOR_COUNT];
 	
 	for(uint32_t descriptorInfoIndex = 0; descriptorInfoIndex < info.descriptorInfoCount; ++descriptorInfoIndex)
 	{
-		VkDescriptorType descriptorType = TRM_Backend_convertDescriptorType(info.pDescriptorInfos[descriptorInfoIndex].descriptorType);
+		VkDescriptorType descriptorType = TRM_Backend_convertDescriptorType(info.descriptorInfos[descriptorInfoIndex].descriptorType);
 
-		pBindings[descriptorInfoIndex].binding = descriptorInfoIndex;
-		pBindings[descriptorInfoIndex].descriptorCount = 1;
-		pBindings[descriptorInfoIndex].descriptorType = descriptorType;
-		pBindings[descriptorInfoIndex].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-		pBindings[descriptorInfoIndex].pImmutableSamplers = NULL;
+		bindings[descriptorInfoIndex].binding = descriptorInfoIndex;
+		bindings[descriptorInfoIndex].descriptorCount = 1;
+		bindings[descriptorInfoIndex].descriptorType = descriptorType;
+		bindings[descriptorInfoIndex].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+		bindings[descriptorInfoIndex].pImmutableSamplers = NULL;
 	}
 
 	TRM_Backend_createDescriptorSetLayout(
 		pState->pAllocator, 
 		pState->device, 
 		info.descriptorInfoCount, 
-		pBindings, 
+		bindings, 
 		&pipeline.info.compute.descriptorSetLayout);
-	TRM_Memory_deallocate(pBindings);
 
 	TRM_Backend_createPipelineLayout(
 		pState->pAllocator, 
@@ -3788,32 +3741,30 @@ void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint
 	
 	pipeline.type = TRM_PIPELINE_TYPE_GRAPHICS;
 	pipeline.info.graphics.descriptorInfoCount = info.descriptorInfoCount;
-	TRM_Memory_allocate(sizeof(struct TRM_DescriptorInfo) * info.descriptorInfoCount, (void**)&pipeline.info.graphics.pDescriptorInfos);
 	TRM_Memory_memcpy(
 		sizeof(struct TRM_DescriptorInfo) * info.descriptorInfoCount, 
-		info.pDescriptorInfos, 
-		pipeline.info.graphics.pDescriptorInfos);
+		info.descriptorInfos, 
+		pipeline.info.graphics.descriptorInfos);
 
-	VkDescriptorSetLayoutBinding* pBindings = NULL;
-	TRM_Memory_allocate(sizeof(VkDescriptorSetLayoutBinding) * info.descriptorInfoCount, (void**)&pBindings);
+	VkDescriptorSetLayoutBinding bindings[TRM_MAX_DESCRIPTOR_COUNT];
+	
 	for(uint32_t descriptorInfoIndex = 0; descriptorInfoIndex < info.descriptorInfoCount; ++descriptorInfoIndex)
 	{
-		VkDescriptorType descriptorType = TRM_Backend_convertDescriptorType(info.pDescriptorInfos[descriptorInfoIndex].descriptorType);
+		VkDescriptorType descriptorType = TRM_Backend_convertDescriptorType(info.descriptorInfos[descriptorInfoIndex].descriptorType);
 
-		pBindings[descriptorInfoIndex].binding = descriptorInfoIndex;
-		pBindings[descriptorInfoIndex].descriptorCount = 1;
-		pBindings[descriptorInfoIndex].descriptorType = descriptorType;
-		pBindings[descriptorInfoIndex].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-		pBindings[descriptorInfoIndex].pImmutableSamplers = NULL;
+		bindings[descriptorInfoIndex].binding = descriptorInfoIndex;
+		bindings[descriptorInfoIndex].descriptorCount = 1;
+		bindings[descriptorInfoIndex].descriptorType = descriptorType;
+		bindings[descriptorInfoIndex].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+		bindings[descriptorInfoIndex].pImmutableSamplers = NULL;
 	}
 
 	TRM_Backend_createDescriptorSetLayout(
 		pState->pAllocator, 
 		pState->device, 
 		info.descriptorInfoCount, 
-		pBindings, 
+		bindings, 
 		&pipeline.info.graphics.descriptorSetLayout);
-	TRM_Memory_deallocate(pBindings);
 
 	TRM_Backend_createPipelineLayout(
 		pState->pAllocator, 
@@ -3828,15 +3779,14 @@ void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint
 	VkShaderModule fragmentShaderModule;
 	TRM_Backend_createShaderModule(pState->pAllocator, pState->device, info.fragmentCodeSize, (uint32_t*)info.pFragmentCode, &fragmentShaderModule);
 
-	VkVertexInputAttributeDescription* pVertexAttributeDescriptions = NULL;
-	TRM_Memory_allocate(sizeof(VkVertexInputAttributeDescription) * info.vertexAttributeDescriptionCount, (void**)&pVertexAttributeDescriptions);
+	VkVertexInputAttributeDescription vertexAttributeDescriptions[TRM_MAX_VERTEX_ATTRIBUTE_COUNT];
 
 	for(uint32_t i = 0; i < info.vertexAttributeDescriptionCount; ++i)
 	{
-		pVertexAttributeDescriptions[i].binding = 0;
-		pVertexAttributeDescriptions[i].format = TRM_Backend_convertFormat(info.pVertexAttributeDescriptions[i].format);
-		pVertexAttributeDescriptions[i].location = info.pVertexAttributeDescriptions[i].shaderLocation;
-		pVertexAttributeDescriptions[i].offset = info.pVertexAttributeDescriptions[i].offset;
+		vertexAttributeDescriptions[i].binding = 0;
+		vertexAttributeDescriptions[i].format = TRM_Backend_convertFormat(info.vertexAttributeDescriptions[i].format);
+		vertexAttributeDescriptions[i].location = info.vertexAttributeDescriptions[i].shaderLocation;
+		vertexAttributeDescriptions[i].offset = info.vertexAttributeDescriptions[i].offset;
 	}
 
 	VkVertexInputBindingDescription vertexBindingDescription = {0};
@@ -3851,41 +3801,39 @@ void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint
 	vertexInputStateCreateInfo.vertexBindingDescriptionCount = 1;
 	vertexInputStateCreateInfo.pVertexBindingDescriptions = &vertexBindingDescription;
 	vertexInputStateCreateInfo.vertexAttributeDescriptionCount = info.vertexAttributeDescriptionCount;
-	vertexInputStateCreateInfo.pVertexAttributeDescriptions = pVertexAttributeDescriptions;
+	vertexInputStateCreateInfo.pVertexAttributeDescriptions = vertexAttributeDescriptions;
 
-	VkAttachmentDescription* pAttachmentDescriptions = NULL;
-	TRM_Memory_allocate(sizeof(VkAttachmentDescription) * (info.colorOutputImageCount + 1), (void**)&pAttachmentDescriptions);
+	VkAttachmentDescription attachmentDescriptions[TRM_MAX_COLOR_OUTPUT_COUNT + 1];
 
 	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < info.colorOutputImageCount; ++colorOutputImageIndex)
 	{
-		pAttachmentDescriptions[colorOutputImageIndex].flags = 0;
-		pAttachmentDescriptions[colorOutputImageIndex].format = TRM_Backend_convertFormat(info.pColorOutputImageFormats[colorOutputImageIndex]);
-		pAttachmentDescriptions[colorOutputImageIndex].samples = VK_SAMPLE_COUNT_1_BIT;
-		pAttachmentDescriptions[colorOutputImageIndex].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		pAttachmentDescriptions[colorOutputImageIndex].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-		pAttachmentDescriptions[colorOutputImageIndex].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		pAttachmentDescriptions[colorOutputImageIndex].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		pAttachmentDescriptions[colorOutputImageIndex].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		pAttachmentDescriptions[colorOutputImageIndex].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		attachmentDescriptions[colorOutputImageIndex].flags = 0;
+		attachmentDescriptions[colorOutputImageIndex].format = TRM_Backend_convertFormat(info.colorOutputImageInfos[colorOutputImageIndex].format);
+		attachmentDescriptions[colorOutputImageIndex].samples = VK_SAMPLE_COUNT_1_BIT;
+		attachmentDescriptions[colorOutputImageIndex].loadOp = TRM_Backend_convertLoadOp(info.colorOutputImageInfos[colorOutputImageIndex].loadOp);
+		attachmentDescriptions[colorOutputImageIndex].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		attachmentDescriptions[colorOutputImageIndex].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attachmentDescriptions[colorOutputImageIndex].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attachmentDescriptions[colorOutputImageIndex].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		attachmentDescriptions[colorOutputImageIndex].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	}
 
-	pAttachmentDescriptions[info.colorOutputImageCount].flags = 0;
-	pAttachmentDescriptions[info.colorOutputImageCount].format = TRM_Backend_convertFormat(info.depthOutputFormat);
-	pAttachmentDescriptions[info.colorOutputImageCount].samples = VK_SAMPLE_COUNT_1_BIT;
-	pAttachmentDescriptions[info.colorOutputImageCount].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	pAttachmentDescriptions[info.colorOutputImageCount].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	pAttachmentDescriptions[info.colorOutputImageCount].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	pAttachmentDescriptions[info.colorOutputImageCount].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	pAttachmentDescriptions[info.colorOutputImageCount].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	pAttachmentDescriptions[info.colorOutputImageCount].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachmentDescriptions[info.colorOutputImageCount].flags = 0;
+	attachmentDescriptions[info.colorOutputImageCount].format = TRM_Backend_convertFormat(info.depthOutputInfo.format);
+	attachmentDescriptions[info.colorOutputImageCount].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachmentDescriptions[info.colorOutputImageCount].loadOp = TRM_Backend_convertLoadOp(info.depthOutputInfo.loadOp);
+	attachmentDescriptions[info.colorOutputImageCount].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachmentDescriptions[info.colorOutputImageCount].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachmentDescriptions[info.colorOutputImageCount].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachmentDescriptions[info.colorOutputImageCount].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachmentDescriptions[info.colorOutputImageCount].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-	VkAttachmentReference* pColorAttachmentReferences = NULL;
-	TRM_Memory_allocate(sizeof(VkAttachmentReference) * info.colorOutputImageCount, (void**)&pColorAttachmentReferences);
+	VkAttachmentReference colorAttachmentReferences[TRM_MAX_COLOR_OUTPUT_COUNT];
 
 	for(uint32_t colorOutputImageIndex = 0; colorOutputImageIndex < info.colorOutputImageCount; ++colorOutputImageIndex)
 	{
-		pColorAttachmentReferences[colorOutputImageIndex].attachment = colorOutputImageIndex;
-		pColorAttachmentReferences[colorOutputImageIndex].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		colorAttachmentReferences[colorOutputImageIndex].attachment = colorOutputImageIndex;
+		colorAttachmentReferences[colorOutputImageIndex].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	}	
 
 	VkAttachmentReference depthAttachmentReference;
@@ -3898,7 +3846,7 @@ void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint
 	subpassDescription.inputAttachmentCount = 0;
 	subpassDescription.pInputAttachments = NULL;
 	subpassDescription.colorAttachmentCount = info.colorOutputImageCount;
-	subpassDescription.pColorAttachments = pColorAttachmentReferences;
+	subpassDescription.pColorAttachments = colorAttachmentReferences;
 	subpassDescription.pResolveAttachments = NULL;
 	subpassDescription.pDepthStencilAttachment = &depthAttachmentReference;
 	subpassDescription.preserveAttachmentCount = 0;
@@ -3908,7 +3856,7 @@ void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint
 		pState->pAllocator,
 		pState->device,
 		info.colorOutputImageCount + 1,
-		pAttachmentDescriptions,
+		attachmentDescriptions,
 		subpassDescription,
 		&pipeline.info.graphics.renderPass);
 
@@ -3925,10 +3873,6 @@ void TRM_createGraphicsPipeline(struct TRM_GraphicsPipelineCreateInfo info, uint
 
 	vkDestroyShaderModule(pState->device, vertexShaderModule, pState->pAllocator);
 	vkDestroyShaderModule(pState->device, fragmentShaderModule, pState->pAllocator);
-
-	TRM_Memory_deallocate(pVertexAttributeDescriptions);
-	TRM_Memory_deallocate(pAttachmentDescriptions);
-	TRM_Memory_deallocate(pColorAttachmentReferences);
 
 	TRM_Arena_add(&pipeline, &pState->pipelinePool, pHandle);
 }
@@ -3948,7 +3892,6 @@ void TRM_destroyPipeline(uint32_t handle)
 		vkDestroyDescriptorSetLayout(pState->device, pPipeline->info.compute.descriptorSetLayout, pState->pAllocator);
 		vkDestroyPipelineLayout(pState->device, pPipeline->info.compute.pipelineLayout, pState->pAllocator);
 		vkDestroyPipeline(pState->device, pPipeline->info.compute.pipeline, pState->pAllocator);
-		TRM_Memory_deallocate(pPipeline->info.compute.pDescriptorInfos);
 	}
 	else
 	{
@@ -3956,7 +3899,6 @@ void TRM_destroyPipeline(uint32_t handle)
 		vkDestroyPipelineLayout(pState->device, pPipeline->info.graphics.pipelineLayout, pState->pAllocator);
 		vkDestroyPipeline(pState->device, pPipeline->info.graphics.pipeline, pState->pAllocator);
 		vkDestroyRenderPass(pState->device, pPipeline->info.graphics.renderPass, pState->pAllocator);
-		TRM_Memory_deallocate(pPipeline->info.graphics.pDescriptorInfos);
 	}
 }
 
