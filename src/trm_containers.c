@@ -53,7 +53,7 @@ void TRM_DynamicArray_getPtrAt(uint32_t index, const struct TRM_DynamicArray* pD
 		exit(EXIT_FAILURE);
 	}
 
-	*ppElement = (uint8_t*)pDynamicArray->pData + pDynamicArray->elementSize;
+	*ppElement = (uint8_t*)pDynamicArray->pData + pDynamicArray->elementSize * index;
 }
 
 /* Arena */
